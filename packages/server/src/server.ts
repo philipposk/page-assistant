@@ -37,6 +37,8 @@ export interface ServerConfig {
   knowledge?: string;
   /** Suggested prompts the assistant offers proactively. */
   suggestions?: string[];
+  /** Which discovery files to serve. All default true. */
+  expose?: { robotsTxt?: boolean; llmTxt?: boolean; llmActions?: boolean };
 }
 
 /** Build an Express app exposing the page-assistant backend. Mount or listen() it. */
@@ -136,15 +138,29 @@ export function createServer(config: ServerConfig = {}): Express {
   app.get("/v1/feedback", async (_req, res) => res.json({ tickets: await tickets.list() }));
   app.get("/.well-known/agent-feedback.json", (_req, res) => res.json(feedbackWellKnown(config.appName ?? "app", feedbackEndpoint)));
 
+  // --- Discovery files (toggleable; all default on) ---
+  const expose = { robotsTxt: true, llmTxt: true, llmActions: true, ...(config.expose ?? {}) };
+  if (expose.robotsTxt) {
+    app.get("/robots.txt", (_req, res) => {
+      const base = config.llmTxt?.appUrl.replace(/\/$/, "") ?? "";
+      const lines = ["User-agent: *", "Allow: /", "", "# AI agents: this app ships a grounded assistant + machine-readable capabilities."];
+      if (config.llmTxt && config.capabilities && expose.llmTxt) lines.push(`# Capabilities: ${base}/llm.txt`);
+      if (config.llmTxt && config.capabilities && expose.llmActions) lines.push(`# Capabilities (JSON): ${base}/.well-known/llm-actions.json`);
+      if (config.capabilities) lines.push(`# Drive the assistant: POST ${base}/v1/agent`);
+      res.type("text/plain").send(lines.join("\n") + "\n");
+    });
+  }
   // --- llm.txt + machine manifest for other agents to discover the app ---
   if (config.llmTxt && config.capabilities) {
     const meta = { ...config.llmTxt, feedbackEndpoint };
-    app.get("/llm.txt", (_req, res) => {
-      res.type("text/plain").send(generateLlmTxt(meta, config.capabilities!));
-    });
-    app.get("/.well-known/llm-actions.json", (_req, res) => {
-      res.json({ ...generateActionsJson(meta, config.capabilities!), feedbackEndpoint });
-    });
+    if (expose.llmTxt)
+      app.get("/llm.txt", (_req, res) => {
+        res.type("text/plain").send(generateLlmTxt(meta, config.capabilities!));
+      });
+    if (expose.llmActions)
+      app.get("/.well-known/llm-actions.json", (_req, res) => {
+        res.json({ ...generateActionsJson(meta, config.capabilities!), feedbackEndpoint });
+      });
   }
 
   app.get("/v1/health", (_req, res) => res.json({ ok: true }));

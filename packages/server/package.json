@@ -9,6 +9,8 @@
   "bin": { "page-assistant-server": "./dist/bin.js" },
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/server" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --env-file=.env dist/bin.js",
