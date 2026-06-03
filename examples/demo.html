@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Page Assistant — embed demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f5f7f6; color: #14241c; }
+    header { padding: 48px 32px; background: linear-gradient(120deg,#ecfdf3,#d1fae5); }
+    h1 { margin: 0 0 8px; } main { padding: 32px; max-width: 720px; }
+    a.btn { display:inline-block; padding:10px 16px; background:#16a34a; color:#fff; border-radius:8px; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Acme Strains</h1>
+    <p>A demo host page. The page assistant mounts bottom-right →</p>
+  </header>
+  <main>
+    <h2>Catalogue</h2>
+    <p>Browse strains, simulate crosses, get grow advice.</p>
+    <a class="btn" href="#simulate">Simulate a cross</a>
+  </main>
+
+  <script src="../packages/widget/dist/page-assistant.global.js"></script>
+  <script>
+    const { PageAssistant } = window;
+    PageAssistant.init({
+      serverUrl: "http://localhost:8787",
+      appName: "Acme Assistant",
+      greeting: "Hi! I can read this page and run things for you. Try the mic 🎙",
+      voice: true,
+      capabilities: [
+        {
+          name: "simulate_cross",
+          description: "Simulate a breeding cross between two strains and predict yield and height.",
+          parameters: { type: "object", properties: {
+            a: { type: "string", description: "first strain name" },
+            b: { type: "string", description: "second strain name" }
+          }, required: ["a", "b"] },
+          run: ({ a, b }) => ({ yieldScore: 72, heightLow: 95, heightHigh: 140 }),
+          render: (r, a) => `Cross of ${a.a} × ${a.b}: predicted yield ${r.yieldScore}/100, height ${r.heightLow}–${r.heightHigh} cm.`
+        }
+      ]
+    });
+  </script>
+</body>
+</html>

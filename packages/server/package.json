@@ -1,0 +1,25 @@
+{
+  "name": "@page-assistant/server",
+  "version": "0.1.0",
+  "description": "Node backend for the page assistant: LLM proxy, voice (TTS/STT), external agent endpoint, llm.txt hosting.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "page-assistant-server": "./dist/bin.js" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --env-file=.env dist/bin.js",
+    "start": "node dist/bin.js"
+  },
+  "dependencies": {
+    "@page-assistant/core": "0.1.0",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0"
+  }
+}
