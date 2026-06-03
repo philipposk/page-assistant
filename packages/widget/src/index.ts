@@ -66,6 +66,7 @@ class PageAssistantController {
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),
     });
+    injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl);
     this.firstOpenHook();
   }
 
@@ -186,6 +187,20 @@ export const PageAssistant = {
     return instance;
   },
 };
+
+/** Add <link rel="llm"> + meta so agents scanning the page HTML discover the manifest. */
+function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
+  if (typeof document === "undefined" || document.querySelector('link[rel="llm"]')) return;
+  const base = (serverUrl || "").replace(/\/$/, "");
+  const link = document.createElement("link");
+  link.rel = "llm";
+  link.href = knowledgeUrl || `${base}/llm.txt`;
+  document.head.appendChild(link);
+  const meta = document.createElement("meta");
+  meta.name = "llm-actions";
+  meta.content = `${base}/.well-known/llm-actions.json`;
+  document.head.appendChild(meta);
+}
 
 // UMD-ish global for <script> embedding.
 if (typeof window !== "undefined") (window as any).PageAssistant = PageAssistant;
