@@ -19,6 +19,13 @@ export interface AssistantOptions {
   persona?: string;
   /** App name used in the system prompt. */
   appName?: string;
+  /**
+   * Free-text knowledge about the app — README, docs, "what this is for". Injected into the
+   * system prompt so the assistant understands the product, not just its buttons.
+   */
+  knowledge?: string;
+  /** Suggested things the user can ask. The assistant offers these proactively. */
+  suggestions?: string[];
 }
 
 /**
@@ -36,6 +43,11 @@ export class Assistant {
 
   get capabilities(): Capability[] {
     return [...this.caps.values()];
+  }
+
+  /** Fold in extra knowledge discovered at runtime (e.g. fetched README / llm.txt). */
+  setKnowledge(text: string) {
+    this.opts.knowledge = [this.opts.knowledge, text].filter(Boolean).join("\n\n").slice(0, 6000);
   }
 
   private systemPrompt(page: PageContext): string {
@@ -62,6 +74,9 @@ export class Assistant {
       );
     }
     if (this.opts.persona) lines.push(this.opts.persona);
+    if (this.opts.knowledge) lines.push(`\nWhat this app is (background — use it to understand requests, not as facts to quote verbatim):\n${this.opts.knowledge.slice(0, 4000)}`);
+    if (this.opts.suggestions?.length)
+      lines.push(`If the user seems unsure what to do, offer one of: ${this.opts.suggestions.slice(0, 6).join("; ")}.`);
     return lines.join("\n");
   }
 

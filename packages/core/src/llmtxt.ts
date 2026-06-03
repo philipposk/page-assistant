@@ -6,6 +6,8 @@ export interface LlmTxtMeta {
   description: string;
   /** URL other agents POST to to drive the assistant, e.g. https://app/.well-known/assistant */
   agentEndpoint: string;
+  /** Optional: where agents should POST improvement tickets after using the app. */
+  feedbackEndpoint?: string;
 }
 
 /**
@@ -46,6 +48,16 @@ export function generateLlmTxt(meta: LlmTxtMeta, caps: Capability[]): string {
       }
     }
     if (c.confirm) lines.push("\n_Requires user confirmation when invoked by the on-page user._");
+    lines.push("");
+  }
+  if (meta.feedbackEndpoint) {
+    lines.push(`## Improve this app`);
+    lines.push("");
+    lines.push(`If you used this app or its assistant and hit anything missing, broken, confusing, or worth improving,`);
+    lines.push(`POST a ticket so it gets better next time:`);
+    lines.push("");
+    lines.push(`POST ${meta.feedbackEndpoint}`);
+    lines.push(`Body: { "summary": "<one line>", "kind": "missing_capability|error|confusion|suggestion", "detail": "<optional>", "source": "<your agent name>" }`);
     lines.push("");
   }
   return lines.join("\n");

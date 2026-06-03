@@ -4,9 +4,14 @@ import {
   InMemoryStore,
   generateLlmTxt,
   generateActionsJson,
+  MemoryTicketStore,
+  normalizeTicket,
+  ticketsFromRun,
+  feedbackWellKnown,
   type Capability,
   type LLMProvider,
   type LlmTxtMeta,
+  type TicketStore,
 } from "@page-assistant/core";
 import { routerFromEnv } from "./llm/router.js";
 import { synthesize, transcribe } from "./voice.js";
@@ -26,6 +31,12 @@ export interface ServerConfig {
   corsOrigin?: string;
   appName?: string;
   persona?: string;
+  /** Where improvement tickets are stored. Default in-memory. */
+  ticketStore?: TicketStore;
+  /** Background knowledge (README/docs) injected so the assistant understands the app. */
+  knowledge?: string;
+  /** Suggested prompts the assistant offers proactively. */
+  suggestions?: string[];
 }
 
 /** Build an Express app exposing the page-assistant backend. Mount or listen() it. */
@@ -44,6 +55,8 @@ export function createServer(config: ServerConfig = {}): Express {
   });
 
   const llm = config.llm ?? lazyRouter();
+  const tickets: TicketStore = config.ticketStore ?? new MemoryTicketStore();
+  const feedbackEndpoint = config.llmTxt ? `${config.llmTxt.appUrl.replace(/\/$/, "")}/v1/feedback` : "/v1/feedback";
 
   // --- LLM proxy: one tool-calling round. The widget's grounding loop drives this. ---
   app.post("/v1/llm/complete", async (req, res) => {
@@ -84,10 +97,12 @@ export function createServer(config: ServerConfig = {}): Express {
       memory: new InMemoryStore(),
       appName: config.appName,
       persona: config.persona,
+      knowledge: config.knowledge,
+      suggestions: config.suggestions,
     });
     app.post("/v1/agent", async (req, res) => {
       try {
-        const { message, page, history } = req.body ?? {};
+        const { message, page, history, source } = req.body ?? {};
         if (!message) return res.status(400).json({ error: "message required" });
         const result = await assistant.chat({
           message,
@@ -95,20 +110,40 @@ export function createServer(config: ServerConfig = {}): Express {
           history,
           caller: "agent",
         });
-        res.json(result);
+        // Self-improving loop: auto-file tickets for errors / caught hallucinations / unmet asks…
+        for (const t of ticketsFromRun(config.appName ?? "app", source ?? "agent", message, result)) await tickets.save(t);
+        // …and explicitly invite the calling agent to add its own.
+        res.json({
+          ...result,
+          feedback: {
+            endpoint: feedbackEndpoint,
+            please: "If anything was missing, broken, or confusing, POST a ticket here so this app improves.",
+          },
+        });
       } catch (e) {
         res.status(500).json({ error: String(e instanceof Error ? e.message : e) });
       }
     });
   }
 
+  // --- Feedback / ticket intake (the improvement loop) ---
+  app.post("/v1/feedback", async (req, res) => {
+    const t = normalizeTicket({ app: config.appName, ...req.body });
+    if ("error" in t) return res.status(400).json(t);
+    await tickets.save(t);
+    res.json({ ok: true });
+  });
+  app.get("/v1/feedback", async (_req, res) => res.json({ tickets: await tickets.list() }));
+  app.get("/.well-known/agent-feedback.json", (_req, res) => res.json(feedbackWellKnown(config.appName ?? "app", feedbackEndpoint)));
+
   // --- llm.txt + machine manifest for other agents to discover the app ---
   if (config.llmTxt && config.capabilities) {
+    const meta = { ...config.llmTxt, feedbackEndpoint };
     app.get("/llm.txt", (_req, res) => {
-      res.type("text/plain").send(generateLlmTxt(config.llmTxt!, config.capabilities!));
+      res.type("text/plain").send(generateLlmTxt(meta, config.capabilities!));
     });
     app.get("/.well-known/llm-actions.json", (_req, res) => {
-      res.json(generateActionsJson(config.llmTxt!, config.capabilities!));
+      res.json({ ...generateActionsJson(meta, config.capabilities!), feedbackEndpoint });
     });
   }
 

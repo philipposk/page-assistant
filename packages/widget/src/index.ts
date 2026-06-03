@@ -25,6 +25,12 @@ export interface PageAssistantConfig {
   autoScan?: boolean;
   /** Greet the user when first opened. */
   greeting?: string;
+  /** Background knowledge (README/docs/"what this app is") so the assistant understands the product. */
+  knowledge?: string;
+  /** URL to fetch extra knowledge from on first open (e.g. "/llm.txt" or "/README.md"). */
+  knowledgeUrl?: string;
+  /** Suggested prompts shown as clickable chips and offered proactively. */
+  suggestions?: string[];
 }
 
 export { capability } from "./capability.js";
@@ -48,6 +54,8 @@ class PageAssistantController {
       memory: new InMemoryStore(),
       appName: cfg.appName,
       persona: cfg.persona,
+      knowledge: cfg.knowledge,
+      suggestions: cfg.suggestions,
     });
     if (cfg.voice) {
       const vo: VoiceOptions = cfg.voice === true ? { serverUrl: cfg.serverUrl } : { serverUrl: cfg.serverUrl, ...cfg.voice };
@@ -70,6 +78,16 @@ class PageAssistantController {
         if (this.scanned) return;
         this.scanned = true;
         if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
+        if (this.cfg.suggestions?.length) this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+        // Auto-onboard: pull in README/llm.txt so the assistant understands the app.
+        if (this.cfg.knowledgeUrl) {
+          try {
+            const res = await fetch(this.cfg.knowledgeUrl);
+            if (res.ok) this.assistant.setKnowledge((await res.text()).slice(0, 6000));
+          } catch {
+            /* best-effort */
+          }
+        }
         if (this.cfg.autoScan !== false) {
           this.ui.setState("scanning");
           this.ui.addMessage("system", "Reading this app…");

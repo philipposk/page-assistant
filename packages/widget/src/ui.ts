@@ -45,6 +45,9 @@ const CSS = `
 .confirm { display:flex; gap:8px; margin-top:6px; }
 .confirm button { flex:1; padding:7px; border-radius:8px; border:none; cursor:pointer; font-weight:600; }
 .confirm .yes { background:#16a34a; color:#fff; } .confirm .no { background:#33403a; color:#cde; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.chip { background:#16241c; border:1px solid #2a4636; color:#bfe9cd; border-radius:14px; padding:6px 11px; font-size:12px; cursor:pointer; }
+.chip:hover { background:#1d3328; }
 .foot { padding: 10px; border-top: 1px solid #1f3a2c; display: flex; gap: 8px; }
 .foot input { flex: 1; background: #0b1310; border: 1px solid #244234; color: #e7f5ec; border-radius: 10px; padding: 9px 12px; outline: none; font-size: 14px; }
 .foot button { border: none; border-radius: 10px; padding: 0 12px; cursor: pointer; font-size: 16px; }
@@ -148,6 +151,26 @@ export class WidgetUI {
       this.handlers.onConfirm(false);
     };
     row.append(yes, no);
+    wrap.appendChild(row);
+    this.log.appendChild(wrap);
+    this.log.scrollTop = this.log.scrollHeight;
+  }
+
+  addSuggestions(items: string[], onPick: (t: string) => void) {
+    if (!items.length) return;
+    const wrap = el("div", "msg system");
+    wrap.textContent = "Try:";
+    const row = el("div", "chips");
+    for (const it of items.slice(0, 4)) {
+      const c = el("button", "chip") as HTMLButtonElement;
+      c.textContent = it.length > 48 ? it.slice(0, 46) + "…" : it;
+      c.title = it;
+      c.onclick = () => {
+        row.parentElement?.remove();
+        onPick(it);
+      };
+      row.appendChild(c);
+    }
     wrap.appendChild(row);
     this.log.appendChild(wrap);
     this.log.scrollTop = this.log.scrollHeight;
