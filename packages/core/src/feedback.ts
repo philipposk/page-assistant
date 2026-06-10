@@ -50,15 +50,26 @@ export function normalizeTicket(body: unknown): Ticket | { error: string } {
   if (typeof b.summary !== "string" || !b.summary.trim()) return { error: "summary is required" };
   const kinds: TicketKind[] = ["missing_capability", "error", "hallucination_caught", "confusion", "suggestion", "success", "other"];
   return {
-    app: String(b.app ?? "unknown"),
-    source: String(b.source ?? "anonymous"),
+    app: String(b.app ?? "unknown").slice(0, 100),
+    source: String(b.source ?? "anonymous").slice(0, 100),
     kind: kinds.includes(b.kind as TicketKind) ? (b.kind as TicketKind) : "other",
     summary: b.summary.slice(0, 300),
     detail: typeof b.detail === "string" ? b.detail.slice(0, 4000) : undefined,
-    context: (b.context as Ticket["context"]) ?? undefined,
+    context: sanitizeContext(b.context),
     severity: (["low", "med", "high"].includes(b.severity as string) ? b.severity : "med") as Ticket["severity"],
     createdAt: new Date().toISOString(),
   };
+}
+
+/** Hostile input can't smuggle arbitrary shapes through context — only known string fields survive. */
+function sanitizeContext(raw: unknown): Ticket["context"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: NonNullable<Ticket["context"]> = {};
+  for (const k of ["url", "path", "capability", "request"] as const) {
+    if (typeof r[k] === "string") out[k] = (r[k] as string).slice(0, 500);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /**

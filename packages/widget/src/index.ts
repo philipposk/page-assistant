@@ -1,6 +1,7 @@
 import {
   Assistant,
   InMemoryStore,
+  rememberFactCapability,
   type Capability,
   type ChatMessage,
   type PageContext,
@@ -9,6 +10,8 @@ import { proxyProvider } from "./llmProxy.js";
 import { Voice, type VoiceOptions } from "./voice.js";
 import { WidgetUI } from "./ui.js";
 import { fullScan, scanPage } from "./scanner.js";
+import { LocalMemoryStore } from "./localMemory.js";
+import { pageActionCapabilities } from "./pageActions.js";
 
 export interface PageAssistantConfig {
   /** Backend base URL (the @page-assistant/server deployment). */
@@ -31,11 +34,15 @@ export interface PageAssistantConfig {
   knowledgeUrl?: string;
   /** Suggested prompts shown as clickable chips and offered proactively. */
   suggestions?: string[];
+  /** "persistent" (default, localStorage — remembers across visits) or "session" (forgets on reload). */
+  memory?: "persistent" | "session";
 }
 
 export { capability } from "./capability.js";
 export type { Capability } from "@page-assistant/core";
 export { scanPage, fullScan } from "./scanner.js";
+export { LocalMemoryStore } from "./localMemory.js";
+export { pageActionCapabilities } from "./pageActions.js";
 
 class PageAssistantController {
   private assistant: Assistant;
@@ -48,10 +55,23 @@ class PageAssistantController {
   private map?: PageContext["map"];
 
   constructor(private cfg: PageAssistantConfig) {
+    // Persistent memory by default (localStorage); opt out with memory: "session".
+    const memory = cfg.memory === "session" ? new InMemoryStore() : new LocalMemoryStore();
+    // Built-ins: remember facts + act on any scanned page. Host capabilities win on name clash.
+    const builtins = [
+      rememberFactCapability,
+      ...pageActionCapabilities(
+        () => this.map,
+        async () => {
+          this.map = await fullScan();
+          return this.map;
+        }
+      ),
+    ].filter((b) => !cfg.capabilities.some((c) => c.name === b.name));
     this.assistant = new Assistant({
-      capabilities: cfg.capabilities,
+      capabilities: [...cfg.capabilities, ...builtins],
       llm: proxyProvider(cfg.serverUrl),
-      memory: new InMemoryStore(),
+      memory,
       appName: cfg.appName,
       persona: cfg.persona,
       knowledge: cfg.knowledge,
@@ -65,44 +85,40 @@ class PageAssistantController {
       onSend: (t) => this.handleUser(t),
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),
+      onToggle: (open) => this.handleToggle(open),
     });
     injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl);
-    this.firstOpenHook();
   }
 
-  private firstOpenHook() {
-    // Lazily scan + greet the first time the panel opens.
-    const launcher = (this.ui as any).launcher as HTMLElement;
-    launcher.addEventListener(
-      "click",
-      async () => {
-        if (this.scanned) return;
-        this.scanned = true;
-        if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
-        if (this.cfg.suggestions?.length) this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
-        // Auto-onboard: pull in README/llm.txt so the assistant understands the app.
-        if (this.cfg.knowledgeUrl) {
-          try {
-            const res = await fetch(this.cfg.knowledgeUrl);
-            if (res.ok) this.assistant.setKnowledge((await res.text()).slice(0, 6000));
-          } catch {
-            /* best-effort */
-          }
-        }
-        if (this.cfg.autoScan !== false) {
-          this.ui.setState("scanning");
-          this.ui.addMessage("system", "Reading this app…");
-          try {
-            this.map = await fullScan();
-          } catch {
-            this.map = { scannedAt: new Date().toISOString(), pages: [], controls: scanPage() };
-          }
-          this.ui.setState("idle");
-          this.ui.addMessage("system", `Ready — mapped ${this.map?.pages.length ?? 0} pages, ${this.map?.controls.length ?? 0} controls.`);
-        }
-      },
-      { once: true }
-    );
+  private async handleToggle(open: boolean) {
+    if (!open) {
+      this.voice?.stop(); // closing the panel shuts the assistant up
+      return;
+    }
+    if (this.scanned) return;
+    this.scanned = true;
+    if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
+    if (this.cfg.suggestions?.length) this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+    // Auto-onboard: pull in README/llm.txt so the assistant understands the app.
+    if (this.cfg.knowledgeUrl) {
+      try {
+        const res = await fetch(this.cfg.knowledgeUrl);
+        if (res.ok) this.assistant.setKnowledge((await res.text()).slice(0, 6000));
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (this.cfg.autoScan !== false) {
+      this.ui.setState("scanning");
+      this.ui.addMessage("system", "Reading this app…");
+      try {
+        this.map = await fullScan();
+      } catch {
+        this.map = { scannedAt: new Date().toISOString(), pages: [], controls: scanPage() };
+      }
+      this.ui.setState("idle");
+      this.ui.addMessage("system", `Ready — mapped ${this.map?.pages.length ?? 0} pages, ${this.map?.controls.length ?? 0} controls.`);
+    }
   }
 
   private pageContext(): PageContext {
@@ -116,6 +132,11 @@ class PageAssistantController {
   }
 
   private async handleUser(text: string) {
+    // Typing a new message abandons any staged confirmation — it must not fire later.
+    if (this.pending) {
+      this.pending = undefined;
+      this.ui.addMessage("system", "Previous pending action cancelled.");
+    }
     this.ui.addMessage("user", text);
     this.ui.setState("thinking");
     try {
@@ -144,10 +165,16 @@ class PageAssistantController {
       return;
     }
     this.ui.setState("thinking");
-    const res = await this.assistant.confirmAndRun(this.pending.name, this.pending.args, this.pageContext());
-    this.pending = undefined;
-    this.ui.addMessage("assistant", res.message);
-    await this.say(res.message);
+    try {
+      const res = await this.assistant.confirmAndRun(this.pending.name, this.pending.args, this.pageContext());
+      this.ui.addMessage("assistant", res.message);
+      await this.say(res.message);
+    } catch (e) {
+      this.ui.addMessage("system", `Error: ${e instanceof Error ? e.message : e}`);
+      this.ui.setState("idle");
+    } finally {
+      this.pending = undefined;
+    }
   }
 
   private async say(text: string) {
@@ -156,7 +183,11 @@ class PageAssistantController {
       return;
     }
     this.ui.setState("talking");
-    await this.voice.speak(text);
+    try {
+      await this.voice.speak(text);
+    } catch {
+      /* a TTS failure must not freeze the mascot in "talking" */
+    }
     this.ui.setState("idle");
   }
 
@@ -169,10 +200,16 @@ class PageAssistantController {
     this.listening = true;
     this.ui.setMic(true);
     this.ui.setState("listening");
-    const text = await this.voice.listenOnce();
-    this.listening = false;
-    this.ui.setMic(false);
-    this.ui.setState("idle");
+    let text = "";
+    try {
+      text = await this.voice.listenOnce();
+    } catch {
+      this.ui.addMessage("system", "I couldn't access the microphone.");
+    } finally {
+      this.listening = false;
+      this.ui.setMic(false);
+      this.ui.setState("idle");
+    }
     if (text.trim()) this.handleUser(text.trim());
   }
 }

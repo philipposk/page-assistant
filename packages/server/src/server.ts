@@ -15,6 +15,7 @@ import {
 } from "@page-assistant/core";
 import { routerFromEnv } from "./llm/router.js";
 import { synthesize, transcribe } from "./voice.js";
+import { rateLimit, bearerAuth } from "./ratelimit.js";
 
 export interface ServerConfig {
   /** LLM provider; defaults to env-based router. */
@@ -58,10 +59,21 @@ export function createServer(config: ServerConfig = {}): Express {
 
   const llm = config.llm ?? lazyRouter();
   const tickets: TicketStore = config.ticketStore ?? new MemoryTicketStore();
-  const feedbackEndpoint = config.llmTxt ? `${config.llmTxt.appUrl.replace(/\/$/, "")}/v1/feedback` : "/v1/feedback";
+  const baseUrl = config.llmTxt?.appUrl?.replace(/\/$/, "");
+  // Without an absolute base URL the discovery docs would advertise a relative path,
+  // which breaks any agent reading them from elsewhere — fall back honestly to relative
+  // only for same-origin use and document it.
+  const feedbackEndpoint = baseUrl ? `${baseUrl}/v1/feedback` : "/v1/feedback";
+
+  // --- Abuse protection: these endpoints spend real API credit. ---
+  const guard = bearerAuth(process.env.PA_AUTH_TOKEN);
+  const llmLimit = rateLimit({ windowMs: 60_000, max: Number(process.env.PA_RATE_LLM ?? 30), name: "llm" });
+  const voiceLimit = rateLimit({ windowMs: 60_000, max: Number(process.env.PA_RATE_VOICE ?? 20), name: "voice" });
+  const agentLimit = rateLimit({ windowMs: 60_000, max: Number(process.env.PA_RATE_AGENT ?? 10), name: "agent" });
+  const feedbackLimit = rateLimit({ windowMs: 60_000, max: Number(process.env.PA_RATE_FEEDBACK ?? 10), name: "feedback" });
 
   // --- LLM proxy: one tool-calling round. The widget's grounding loop drives this. ---
-  app.post("/v1/llm/complete", async (req, res) => {
+  app.post("/v1/llm/complete", guard, llmLimit, async (req, res) => {
     try {
       const out = await llm.complete(req.body);
       res.json(out);
@@ -71,8 +83,11 @@ export function createServer(config: ServerConfig = {}): Express {
   });
 
   // --- Voice ---
-  app.post("/v1/voice/tts", async (req, res) => {
+  app.post("/v1/voice/tts", guard, voiceLimit, async (req, res) => {
     try {
+      const text = req.body?.text;
+      if (typeof text !== "string" || !text.trim()) return res.status(400).json({ error: "text required" });
+      if (text.length > 2000) return res.status(400).json({ error: "text too long (max 2000 chars)" });
       const { audio, contentType } = await synthesize(req.body);
       res.setHeader("content-type", contentType);
       res.send(audio);
@@ -81,10 +96,12 @@ export function createServer(config: ServerConfig = {}): Express {
     }
   });
 
-  app.post("/v1/voice/stt", async (req, res) => {
+  app.post("/v1/voice/stt", guard, voiceLimit, async (req, res) => {
     try {
-      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
-      const text = await transcribe(buf, "audio.webm");
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: "audio body required (content-type: application/octet-stream)" });
+      }
+      const text = await transcribe(req.body, "audio.webm");
       res.json({ text });
     } catch (e) {
       res.status(502).json({ error: String(e instanceof Error ? e.message : e) });
@@ -102,7 +119,7 @@ export function createServer(config: ServerConfig = {}): Express {
       knowledge: config.knowledge,
       suggestions: config.suggestions,
     });
-    app.post("/v1/agent", async (req, res) => {
+    app.post("/v1/agent", agentLimit, async (req, res) => {
       try {
         const { message, page, history, source } = req.body ?? {};
         if (!message) return res.status(400).json({ error: "message required" });
@@ -129,13 +146,14 @@ export function createServer(config: ServerConfig = {}): Express {
   }
 
   // --- Feedback / ticket intake (the improvement loop) ---
-  app.post("/v1/feedback", async (req, res) => {
+  app.post("/v1/feedback", feedbackLimit, async (req, res) => {
     const t = normalizeTicket({ app: config.appName, ...req.body });
     if ("error" in t) return res.status(400).json(t);
     await tickets.save(t);
     res.json({ ok: true });
   });
-  app.get("/v1/feedback", async (_req, res) => res.json({ tickets: await tickets.list() }));
+  // Reading tickets is for maintainers, not the public — always behind the token when set.
+  app.get("/v1/feedback", guard, async (_req, res) => res.json({ tickets: await tickets.list() }));
   app.get("/.well-known/agent-feedback.json", (_req, res) => res.json(feedbackWellKnown(config.appName ?? "app", feedbackEndpoint)));
 
   // --- Discovery files (toggleable; all default on) ---
