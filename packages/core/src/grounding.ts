@@ -50,7 +50,7 @@ export class Assistant {
     this.opts.knowledge = [this.opts.knowledge, text].filter(Boolean).join("\n\n").slice(0, 6000);
   }
 
-  private systemPrompt(page: PageContext): string {
+  private systemPrompt(page: PageContext, recalled: string[] = []): string {
     const app = this.opts.appName ?? "this app";
     const lines = [
       `You are the in-app assistant for ${app}. You help the user by calling the app's real capabilities.`,
@@ -74,6 +74,7 @@ export class Assistant {
       );
     }
     if (this.opts.persona) lines.push(this.opts.persona);
+    if (recalled.length) lines.push(`Things you remember about this user (from earlier sessions):\n${recalled.map((r) => `- ${r}`).join("\n")}`);
     if (this.opts.knowledge) lines.push(`\nWhat this app is (background — use it to understand requests, not as facts to quote verbatim):\n${this.opts.knowledge.slice(0, 4000)}`);
     if (this.opts.suggestions?.length)
       lines.push(`If the user seems unsure what to do, offer one of: ${this.opts.suggestions.slice(0, 6).join("; ")}.`);
@@ -95,9 +96,17 @@ export class Assistant {
     const forced = forcedFactualTool(req.message, this.capabilities);
     let corrected = false;
 
+    // Memory is live, not decorative: recall facts relevant to this request into the prompt.
+    let recalled: string[] = [];
+    try {
+      recalled = (await this.opts.memory.recall(req.message, 4)).map((f) => `${f.topic}: ${f.content}`);
+    } catch {
+      /* memory must never break a chat */
+    }
+
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const out = await this.opts.llm.complete({
-        system: this.systemPrompt(req.page),
+        system: this.systemPrompt(req.page, recalled),
         messages,
         tools: this.toolSpecs(),
         forceTool: round === 0 ? forced : undefined,
@@ -121,7 +130,7 @@ export class Assistant {
         // Confirm gate: stage instead of executing.
         if (cap.confirm && caller === "user") {
           return {
-            message: `This will ${cap.description.toLowerCase()} Confirm to proceed.`,
+            message: `Confirm this action? ${cap.description}`,
             invocations,
             pendingConfirmation: {
               name: cap.name,
@@ -228,11 +237,25 @@ export function validateFactualText(
   const rendered = invocations.filter((i) => i.ok && i.rendered).map((i) => i.rendered!) as string[];
   if (!rendered.length) return { text, wasCorrected: false };
 
+  const trusted: number[] = [];
   const trustedNumbers = new Set<string>();
-  for (const r of rendered) for (const n of r.match(/\d+(\.\d+)?/g) ?? []) trustedNumbers.add(n);
+  for (const r of rendered)
+    for (const n of r.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
+      trustedNumbers.add(n);
+      trusted.push(Number(n));
+    }
 
-  const claimedNumbers = text.match(/\d+(\.\d+)?/g) ?? [];
-  const invented = claimedNumbers.filter((n) => !trustedNumbers.has(n) && Number(n) > 4); // ignore small ordinals
+  // A claimed number is honest if a tool returned it exactly, or it's a reasonable
+  // rounding of a trusted value (20.7 → "21", 1200 → "1,200"). Small ordinals (≤4)
+  // are ignored — they're usually list numbering, not factual claims.
+  const isHonest = (n: string) => {
+    if (trustedNumbers.has(n)) return true;
+    const num = Number(n);
+    return trusted.some((t) => Math.round(t) === num || t.toFixed(1) === n || Math.abs(t - num) < 0.05);
+  };
+
+  const claimedNumbers = text.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
+  const invented = claimedNumbers.filter((n) => !isHonest(n) && Number(n) > 4);
   if (invented.length === 0) return { text, wasCorrected: false };
 
   // The model asserted numbers no tool produced. Replace prose with trusted renders.

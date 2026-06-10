@@ -36,12 +36,19 @@ export class Voice {
         const v = speechSynthesis.getVoices().find((x) => x.name.includes(this.opts.browserVoice!));
         if (v) u.voice = v;
       }
-      u.onstart = () => (this.speaking = true);
-      u.onboundary = (e) => onWord?.(text.slice(e.charIndex, e.charIndex + 12));
-      u.onend = () => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
         this.speaking = false;
         resolve();
       };
+      u.onstart = () => (this.speaking = true);
+      u.onboundary = (e) => onWord?.(text.slice(e.charIndex, e.charIndex + 12));
+      u.onend = done;
+      u.onerror = done; // cancel() fires error in some browsers, end in others
+      // Safety: some browsers drop events entirely (e.g. tab backgrounded) — never hang.
+      setTimeout(done, Math.max(5000, text.length * 120));
       speechSynthesis.speak(u);
     });
   }
@@ -89,9 +96,25 @@ export class Voice {
         r.lang = "en-US";
         r.interimResults = false;
         r.maxAlternatives = 1;
-        r.onresult = (e: any) => resolve(e.results[0][0].transcript);
-        r.onerror = () => resolve("");
-        r.onend = () => {};
+        let settled = false;
+        const finish = (text: string) => {
+          if (settled) return;
+          settled = true;
+          resolve(text);
+        };
+        r.onresult = (e: any) => finish(e.results[0][0].transcript);
+        r.onerror = () => finish("");
+        // Silence ends recognition with NO result and NO error — without this the
+        // promise never resolves and the mic button is stuck forever.
+        r.onend = () => finish("");
+        setTimeout(() => {
+          try {
+            r.stop();
+          } catch {
+            /* already stopped */
+          }
+          finish("");
+        }, 12000);
         r.start();
       });
     }
@@ -101,21 +124,35 @@ export class Voice {
   private async listenServer(): Promise<string> {
     if (!this.opts.serverUrl) return "";
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const rec = new MediaRecorder(stream);
-    const chunks: Blob[] = [];
-    rec.ondataavailable = (e) => chunks.push(e.data);
-    rec.start();
-    await new Promise((r) => setTimeout(r, 4000)); // 4s window
-    rec.stop();
-    stream.getTracks().forEach((t) => t.stop());
-    await new Promise((r) => (rec.onstop = () => r(null)));
-    const blob = new Blob(chunks, { type: "audio/webm" });
-    const res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
-      method: "POST",
-      headers: { "content-type": "application/octet-stream" },
-      body: await blob.arrayBuffer(),
-    });
-    if (!res.ok) return "";
-    return (await res.json()).text ?? "";
+    try {
+      const rec = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      // Attach onstop BEFORE stop() and race a timeout so a browser that never fires
+      // the event can't hang us.
+      const stopped = new Promise<void>((r) => {
+        rec.onstop = () => r();
+        setTimeout(r, 6000);
+      });
+      rec.start();
+      await new Promise((r) => setTimeout(r, 4000)); // 4s capture window
+      try {
+        rec.stop();
+      } catch {
+        /* already inactive */
+      }
+      await stopped;
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      if (!blob.size) return "";
+      const res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: await blob.arrayBuffer(),
+      });
+      if (!res.ok) return "";
+      return (await res.json()).text ?? "";
+    } finally {
+      stream.getTracks().forEach((t) => t.stop()); // mic indicator must die even on errors
+    }
   }
 }

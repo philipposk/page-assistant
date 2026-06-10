@@ -7,6 +7,8 @@ export interface UIHandlers {
   onSend: (text: string) => void;
   onMic: () => void;
   onConfirm: (approved: boolean) => void;
+  /** Fired whenever the panel opens/closes — controller hooks onboarding + voice stop here. */
+  onToggle?: (open: boolean) => void;
 }
 
 const CSS = `
@@ -37,6 +39,8 @@ const CSS = `
 .panel.open { display: flex; }
 .head { padding: 14px 16px; background: #12211a; border-bottom: 1px solid #1f3a2c; font-weight: 600; display:flex; align-items:center; gap:8px; }
 .head .dot { width:8px;height:8px;border-radius:50%;background:#4ade80; }
+.head .close { margin-left:auto; background:none; border:none; color:#9ab4a6; font-size:18px; cursor:pointer; padding:2px 6px; border-radius:6px; }
+.head .close:hover { background:#1d3328; color:#e7f5ec; }
 .log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .msg { padding: 9px 12px; border-radius: 12px; max-width: 85%; line-height: 1.4; font-size: 14px; white-space: pre-wrap; }
 .msg.user { align-self: flex-end; background: #1f6f43; }
@@ -85,18 +89,28 @@ export class WidgetUI {
     this.launcher = el("button", "launcher") as HTMLButtonElement;
     this.launcher.innerHTML = `<span class="eye l"></span><span class="eye r"></span>`;
     this.launcher.title = this.title;
+    this.launcher.setAttribute("aria-label", `Open ${this.title}`);
 
     this.panel = el("div", "panel") as HTMLDivElement;
+    this.panel.setAttribute("role", "dialog");
+    this.panel.setAttribute("aria-label", this.title);
     const head = el("div", "head");
     head.innerHTML = `<span class="dot"></span>${escapeHtml(this.title)}`;
+    const closeBtn = el<HTMLButtonElement>("button", "close");
+    closeBtn.textContent = "×";
+    closeBtn.setAttribute("aria-label", "Close assistant");
+    closeBtn.onclick = () => this.toggle(false);
+    head.appendChild(closeBtn);
     this.log = el("div", "log") as HTMLDivElement;
     const foot = el("div", "foot");
     this.input = el("input") as HTMLInputElement;
     this.input.placeholder = "Ask or tell me to do something…";
     this.micBtn = el("button", "mic") as HTMLButtonElement;
     this.micBtn.textContent = "🎙";
+    this.micBtn.setAttribute("aria-label", "Speak to the assistant");
     const send = el("button", "send") as HTMLButtonElement;
     send.textContent = "➤";
+    send.setAttribute("aria-label", "Send message");
 
     foot.append(this.input, this.micBtn, send);
     this.panel.append(head, this.log, foot);
@@ -120,6 +134,8 @@ export class WidgetUI {
   toggle(open?: boolean) {
     const willOpen = open ?? !this.panel.classList.contains("open");
     this.panel.classList.toggle("open", willOpen);
+    if (willOpen) this.input.focus();
+    this.handlers.onToggle?.(willOpen);
   }
 
   setMic(on: boolean) {
