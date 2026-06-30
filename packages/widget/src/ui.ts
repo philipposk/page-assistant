@@ -9,6 +9,8 @@ export interface UIHandlers {
   onConfirm: (approved: boolean) => void;
   /** Fired whenever the panel opens/closes — controller hooks onboarding + voice stop here. */
   onToggle?: (open: boolean) => void;
+  onSettings?: () => void;
+  onTtsToggle?: (enabled: boolean) => void;
 }
 
 const CSS = `
@@ -17,19 +19,19 @@ const CSS = `
 .launcher {
   position: fixed; right: 22px; bottom: 22px; width: 60px; height: 60px; border-radius: 50%;
   border: none; cursor: pointer; z-index: 2147483646;
-  background: radial-gradient(circle at 30% 30%, #4ade80, #16a34a);
-  box-shadow: 0 8px 28px rgba(22,163,74,.45); transition: transform .25s, box-shadow .25s;
+  background: radial-gradient(circle at 30% 30%, #5eead4, #0d9488);
+  box-shadow: 0 8px 28px rgba(13,148,136,.45); transition: transform .25s, box-shadow .25s;
+  display:flex; align-items:center; justify-content:center; color:#042f2e;
 }
+.launcher svg { width: 28px; height: 28px; fill: currentColor; }
 .launcher:hover { transform: scale(1.08); }
-.launcher .eye { position:absolute; width:9px; height:9px; border-radius:50%; background:#0b3d1f; top:23px; }
-.launcher .eye.l { left:18px; } .launcher .eye.r { right:18px; }
 .launcher.talking { animation: bob .5s infinite alternate; }
 .launcher.thinking { animation: spin 1.2s linear infinite; }
-.launcher.listening { box-shadow: 0 0 0 6px rgba(74,222,128,.35), 0 8px 28px rgba(22,163,74,.45); }
+.launcher.listening { box-shadow: 0 0 0 6px rgba(94,234,212,.35), 0 8px 28px rgba(13,148,136,.45); }
 .launcher.scanning { animation: pulse .8s infinite; }
 @keyframes bob { to { transform: translateY(-4px); } }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(74,222,128,.25), 0 8px 28px rgba(22,163,74,.45); } }
+@keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(94,234,212,.25), 0 8px 28px rgba(13,148,136,.45); } }
 .panel {
   position: fixed; right: 22px; bottom: 92px; width: 360px; max-width: calc(100vw - 32px);
   height: 520px; max-height: calc(100vh - 130px); background: #0f1715; color: #e7f5ec;
@@ -40,7 +42,8 @@ const CSS = `
 .head { padding: 14px 16px; background: #12211a; border-bottom: 1px solid #1f3a2c; font-weight: 600; display:flex; align-items:center; gap:8px; }
 .head .dot { width:8px;height:8px;border-radius:50%;background:#4ade80; }
 .head .close { margin-left:auto; background:none; border:none; color:#9ab4a6; font-size:18px; cursor:pointer; padding:2px 6px; border-radius:6px; }
-.head .close:hover { background:#1d3328; color:#e7f5ec; }
+.head .settings { background:none; border:none; color:#9ab4a6; font-size:16px; cursor:pointer; padding:2px 6px; border-radius:6px; margin-left:auto; }
+.head .settings:hover, .head .close:hover { background:#1d3328; color:#e7f5ec; }
 .log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .msg { padding: 9px 12px; border-radius: 12px; max-width: 85%; line-height: 1.4; font-size: 14px; white-space: pre-wrap; }
 .msg.user { align-self: flex-end; background: #1f6f43; }
@@ -57,6 +60,8 @@ const CSS = `
 .foot button { border: none; border-radius: 10px; padding: 0 12px; cursor: pointer; font-size: 16px; }
 .foot .mic { background: #1f3a2c; color: #9ff0c2; }
 .foot .mic.on { background:#16a34a; color:#fff; }
+.foot .tts { background: #1f3a2c; color: #7a9a8a; font-size: 18px; }
+.foot .tts.on { background:#0d9488; color:#ecfdf5; }
 .foot .send { background: #16a34a; color: #fff; }
 .scanline { position:fixed; left:0; right:0; height:3px; background:linear-gradient(90deg,transparent,#4ade80,transparent); z-index:2147483645; display:none; animation: sweep 1.4s ease-in-out infinite; }
 .scanline.on { display:block; }
@@ -70,6 +75,7 @@ export class WidgetUI {
   private log!: HTMLDivElement;
   private input!: HTMLInputElement;
   private micBtn!: HTMLButtonElement;
+  private ttsBtn!: HTMLButtonElement;
   private scanline!: HTMLDivElement;
 
   constructor(private title: string, private handlers: UIHandlers) {
@@ -87,7 +93,7 @@ export class WidgetUI {
 
     this.scanline = el("div", "scanline");
     this.launcher = el("button", "launcher") as HTMLButtonElement;
-    this.launcher.innerHTML = `<span class="eye l"></span><span class="eye r"></span>`;
+    this.launcher.innerHTML = PHONE_SVG;
     this.launcher.title = this.title;
     this.launcher.setAttribute("aria-label", `Open ${this.title}`);
 
@@ -96,15 +102,24 @@ export class WidgetUI {
     this.panel.setAttribute("aria-label", this.title);
     const head = el("div", "head");
     head.innerHTML = `<span class="dot"></span>${escapeHtml(this.title)}`;
+    const settingsBtn = el<HTMLButtonElement>("button", "settings");
+    settingsBtn.textContent = "⚙";
+    settingsBtn.title = "Assistant settings";
+    settingsBtn.setAttribute("aria-label", "Assistant settings");
+    settingsBtn.onclick = () => this.handlers.onSettings?.();
     const closeBtn = el<HTMLButtonElement>("button", "close");
     closeBtn.textContent = "×";
     closeBtn.setAttribute("aria-label", "Close assistant");
     closeBtn.onclick = () => this.toggle(false);
-    head.appendChild(closeBtn);
+    head.append(settingsBtn, closeBtn);
     this.log = el("div", "log") as HTMLDivElement;
     const foot = el("div", "foot");
     this.input = el("input") as HTMLInputElement;
     this.input.placeholder = "Ask or tell me to do something…";
+    this.ttsBtn = el("button", "tts") as HTMLButtonElement;
+    this.ttsBtn.textContent = "☎";
+    this.ttsBtn.title = "Read replies aloud (off)";
+    this.ttsBtn.setAttribute("aria-label", "Toggle read aloud");
     this.micBtn = el("button", "mic") as HTMLButtonElement;
     this.micBtn.textContent = "🎙";
     this.micBtn.setAttribute("aria-label", "Speak to the assistant");
@@ -112,7 +127,7 @@ export class WidgetUI {
     send.textContent = "➤";
     send.setAttribute("aria-label", "Send message");
 
-    foot.append(this.input, this.micBtn, send);
+    foot.append(this.input, this.ttsBtn, this.micBtn, send);
     this.panel.append(head, this.log, foot);
     this.root.append(this.scanline, this.launcher, this.panel);
 
@@ -122,6 +137,11 @@ export class WidgetUI {
       if (e.key === "Enter") this.submit();
     };
     this.micBtn.onclick = () => this.handlers.onMic();
+    this.ttsBtn.onclick = () => {
+      const on = !this.ttsBtn.classList.contains("on");
+      this.setTtsEnabled(on);
+      this.handlers.onTtsToggle?.(on);
+    };
   }
 
   private submit() {
@@ -140,6 +160,11 @@ export class WidgetUI {
 
   setMic(on: boolean) {
     this.micBtn.classList.toggle("on", on);
+  }
+
+  setTtsEnabled(on: boolean) {
+    this.ttsBtn.classList.toggle("on", on);
+    this.ttsBtn.title = on ? "Read replies aloud (on)" : "Read replies aloud (off)";
   }
 
   addMessage(role: "user" | "assistant" | "system", text: string) {
@@ -207,3 +232,5 @@ function el<T extends HTMLElement = HTMLElement>(tag: string, cls?: string): T {
 function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 }
+
+const PHONE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/></svg>`;

@@ -7,6 +7,9 @@ export interface VoiceOptions {
   /** "browser" = SpeechSynthesis (free), "server" = ElevenLabs/OpenAI via backend. */
   ttsMode?: "browser" | "server";
   voiceId?: string;
+  ttsProvider?: "elevenlabs" | "openai";
+  /** "browser" = SpeechRecognition (free), "server" = Whisper via backend. */
+  sttMode?: "browser" | "server";
   /** Preferred browser voice name substring, e.g. "Samantha". */
   browserVoice?: string;
 }
@@ -57,7 +60,11 @@ export class Voice {
     const res = await fetch(`${this.opts.serverUrl}/v1/voice/tts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, voiceId: this.opts.voiceId }),
+      body: JSON.stringify({
+        text,
+        voiceId: this.opts.voiceId,
+        provider: this.opts.ttsProvider,
+      }),
     });
     if (!res.ok) return this.speakBrowser(text);
     const blob = await res.blob();
@@ -89,6 +96,9 @@ export class Voice {
    */
   async listenOnce(): Promise<string> {
     this.stop(); // barge-in
+    if (this.opts.sttMode === "server" && this.opts.serverUrl) {
+      return this.listenServer();
+    }
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SR) {
       return new Promise((resolve) => {

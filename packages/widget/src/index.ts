@@ -34,6 +34,10 @@ export interface PageAssistantConfig {
   knowledgeUrl?: string;
   /** Suggested prompts shown as clickable chips and offered proactively. */
   suggestions?: string[];
+  /** When true, assistant reads replies aloud. Default false (text only). */
+  autoSpeak?: boolean;
+  /** Open assistant / voice settings (gear in panel header). */
+  onSettings?: () => void;
   /** "persistent" (default, localStorage — remembers across visits) or "session" (forgets on reload). */
   memory?: "persistent" | "session";
 }
@@ -51,10 +55,12 @@ class PageAssistantController {
   private history: ChatMessage[] = [];
   private scanned = false;
   private listening = false;
+  private ttsEnabled: boolean;
   private pending?: { name: string; args: Record<string, unknown> };
   private map?: PageContext["map"];
 
   constructor(private cfg: PageAssistantConfig) {
+    this.ttsEnabled = cfg.autoSpeak ?? false;
     // Persistent memory by default (localStorage); opt out with memory: "session".
     const memory = cfg.memory === "session" ? new InMemoryStore() : new LocalMemoryStore();
     // Built-ins: remember facts + act on any scanned page. Host capabilities win on name clash.
@@ -86,8 +92,31 @@ class PageAssistantController {
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),
       onToggle: (open) => this.handleToggle(open),
+      onSettings: () => cfg.onSettings?.(),
+      onTtsToggle: (on) => {
+        this.ttsEnabled = on;
+      },
     });
+    this.ui.setTtsEnabled(this.ttsEnabled);
     injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl);
+  }
+
+  updateConfig(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
+    if (patch.autoSpeak !== undefined) {
+      this.ttsEnabled = patch.autoSpeak;
+      this.ui.setTtsEnabled(this.ttsEnabled);
+    }
+    if (patch.voice !== undefined) {
+      if (patch.voice === false) {
+        this.voice = undefined;
+      } else {
+        const vo: VoiceOptions =
+          patch.voice === true
+            ? { serverUrl: this.cfg.serverUrl }
+            : { serverUrl: this.cfg.serverUrl, ...patch.voice };
+        this.voice = new Voice(vo);
+      }
+    }
   }
 
   private async handleToggle(open: boolean) {
@@ -178,7 +207,7 @@ class PageAssistantController {
   }
 
   private async say(text: string) {
-    if (!this.voice) {
+    if (!this.voice || !this.ttsEnabled) {
       this.ui.setState("idle");
       return;
     }
@@ -222,6 +251,10 @@ export const PageAssistant = {
     if (instance) return instance;
     instance = new PageAssistantController(cfg);
     return instance;
+  },
+  /** Update voice / read-aloud after init (e.g. when user changes settings). */
+  configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
+    instance?.updateConfig(patch);
   },
 };
 
