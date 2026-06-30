@@ -80,8 +80,9 @@ If you give the server your capabilities + metadata, it serves:
 
 ## Voice
 
-- **Free / default:** browser `SpeechSynthesis` (out) + `SpeechRecognition` (in).
-- **Best quality:** set `voice: { ttsMode: "server" }` to route through ElevenLabs Flash (TTS) and Whisper (STT) on the backend.
+- **Free / default:** text-only replies; browser `SpeechRecognition` for mic input. Toggle read-aloud with ☎ in the panel.
+- **Best quality:** built-in settings (gear icon) or `PageAssistant.mountVoiceSettingsPanel()` — pick ElevenLabs / OpenAI voices, browser vs server TTS/STT. Stored in `localStorage` (`page_assistant_voice_settings` by default).
+- **Host override:** `onSettings` replaces the built-in modal; `settingsPageUrl` adds a link to your app settings page.
 - **Barge-in:** talking over the assistant stops it instantly.
 
 ## Packages

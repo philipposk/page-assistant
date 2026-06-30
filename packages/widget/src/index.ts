@@ -12,6 +12,13 @@ import { WidgetUI } from "./ui.js";
 import { fullScan, scanPage } from "./scanner.js";
 import { LocalMemoryStore } from "./localMemory.js";
 import { pageActionCapabilities } from "./pageActions.js";
+import {
+  VOICE_SETTINGS_CHANGE_EVENT,
+  VOICE_SETTINGS_STORAGE_KEY,
+  getVoiceSettings,
+  voiceOptionsFromSettings,
+} from "./settings.js";
+import { openVoiceSettingsModal, mountVoiceSettingsPanel, closeVoiceSettingsModal } from "./settings-ui.js";
 
 export interface PageAssistantConfig {
   /** Backend base URL (the @page-assistant/server deployment). */
@@ -36,8 +43,14 @@ export interface PageAssistantConfig {
   suggestions?: string[];
   /** When true, assistant reads replies aloud. Default false (text only). */
   autoSpeak?: boolean;
-  /** Open assistant / voice settings (gear in panel header). */
+  /** Open assistant / voice settings (gear). Omit to use the built-in voice settings modal. */
   onSettings?: () => void;
+  /** Link shown in the built-in settings modal footer (e.g. "/settings#assistant"). */
+  settingsPageUrl?: string;
+  /** localStorage key for voice prefs. Default `page_assistant_voice_settings`. */
+  settingsStorageKey?: string;
+  /** Load TTS/STT voice options from stored settings on init + when settings change. Default true. */
+  useVoiceSettings?: boolean;
   /** "persistent" (default, localStorage — remembers across visits) or "session" (forgets on reload). */
   memory?: "persistent" | "session";
 }
@@ -47,6 +60,25 @@ export type { Capability } from "@page-assistant/core";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
+export {
+  getVoiceSettings,
+  setVoiceSettings,
+  voiceOptionsFromSettings,
+  ELEVENLABS_VOICES,
+  OPENAI_VOICES,
+  VOICE_SETTINGS_STORAGE_KEY,
+  VOICE_SETTINGS_CHANGE_EVENT,
+  type VoiceSettings,
+  type TtsMode,
+  type TtsProvider,
+  type SttMode,
+} from "./settings.js";
+export {
+  mountVoiceSettingsPanel,
+  openVoiceSettingsModal,
+  closeVoiceSettingsModal,
+  type VoiceSettingsUIOptions,
+} from "./settings-ui.js";
 
 class PageAssistantController {
   private assistant: Assistant;
@@ -58,9 +90,14 @@ class PageAssistantController {
   private ttsEnabled: boolean;
   private pending?: { name: string; args: Record<string, unknown> };
   private map?: PageContext["map"];
+  private settingsKey: string;
+  private onSettingsChange: () => void;
 
   constructor(private cfg: PageAssistantConfig) {
-    this.ttsEnabled = cfg.autoSpeak ?? false;
+    this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
+    const stored = getVoiceSettings(this.settingsKey);
+    const useStored = cfg.useVoiceSettings !== false;
+    this.ttsEnabled = cfg.autoSpeak ?? (useStored ? stored.autoSpeak : false);
     // Persistent memory by default (localStorage); opt out with memory: "session".
     const memory = cfg.memory === "session" ? new InMemoryStore() : new LocalMemoryStore();
     // Built-ins: remember facts + act on any scanned page. Host capabilities win on name clash.
@@ -83,22 +120,48 @@ class PageAssistantController {
       knowledge: cfg.knowledge,
       suggestions: cfg.suggestions,
     });
-    if (cfg.voice) {
-      const vo: VoiceOptions = cfg.voice === true ? { serverUrl: cfg.serverUrl } : { serverUrl: cfg.serverUrl, ...cfg.voice };
+    if (cfg.voice !== false) {
+      let vo: VoiceOptions;
+      if (cfg.voice === true || cfg.voice === undefined) {
+        vo = useStored
+          ? voiceOptionsFromSettings(cfg.serverUrl, stored)
+          : { serverUrl: cfg.serverUrl };
+      } else {
+        vo = { serverUrl: cfg.serverUrl, ...cfg.voice };
+      }
       this.voice = new Voice(vo);
     }
+    const settingsUiOpts = {
+      storageKey: this.settingsKey,
+      settingsPageUrl: cfg.settingsPageUrl,
+      title: cfg.appName ? `${cfg.appName} assistant` : "Page assistant",
+    };
     this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
       onSend: (t) => this.handleUser(t),
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),
       onToggle: (open) => this.handleToggle(open),
-      onSettings: () => cfg.onSettings?.(),
+      onSettings: () =>
+        cfg.onSettings?.() ?? openVoiceSettingsModal(settingsUiOpts),
       onTtsToggle: (on) => {
         this.ttsEnabled = on;
       },
     });
     this.ui.setTtsEnabled(this.ttsEnabled);
+    this.onSettingsChange = () => {
+      if (cfg.useVoiceSettings === false || cfg.voice === false) return;
+      const s = getVoiceSettings(this.settingsKey);
+      this.updateConfig({
+        autoSpeak: cfg.autoSpeak ?? s.autoSpeak,
+        voice: voiceOptionsFromSettings(cfg.serverUrl, s),
+      });
+    };
+    window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
     injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl);
+  }
+
+  dispose() {
+    window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
   }
 
   updateConfig(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
@@ -256,6 +319,9 @@ export const PageAssistant = {
   configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
     instance?.updateConfig(patch);
   },
+  openVoiceSettings: openVoiceSettingsModal,
+  closeVoiceSettings: closeVoiceSettingsModal,
+  mountVoiceSettingsPanel,
 };
 
 /** Add <link rel="llm"> + meta so agents scanning the page HTML discover the manifest. */
