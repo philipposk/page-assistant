@@ -4,6 +4,8 @@
 
 export interface VoiceOptions {
   serverUrl?: string;
+  /** Bearer token when the backend requires PA_AUTH_TOKEN. */
+  authToken?: string;
   /** "browser" = SpeechSynthesis (free), "server" = ElevenLabs/OpenAI via backend. */
   ttsMode?: "browser" | "server";
   voiceId?: string;
@@ -57,9 +59,11 @@ export class Voice {
   }
 
   private async speakServer(text: string): Promise<void> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
     const res = await fetch(`${this.opts.serverUrl}/v1/voice/tts`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({
         text,
         voiceId: this.opts.voiceId,
@@ -154,9 +158,11 @@ export class Voice {
       await stopped;
       const blob = new Blob(chunks, { type: "audio/webm" });
       if (!blob.size) return "";
+      const headers: Record<string, string> = { "content-type": "application/octet-stream" };
+      if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
       const res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
         method: "POST",
-        headers: { "content-type": "application/octet-stream" },
+        headers,
         body: await blob.arrayBuffer(),
       });
       if (!res.ok) return "";

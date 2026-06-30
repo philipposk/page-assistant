@@ -51,6 +51,8 @@ export interface PageAssistantConfig {
   settingsStorageKey?: string;
   /** Load TTS/STT voice options from stored settings on init + when settings change. Default true. */
   useVoiceSettings?: boolean;
+  /** Bearer token for standalone server when PA_AUTH_TOKEN is set. Prefer host session auth in production. */
+  authToken?: string;
   /** "persistent" (default, localStorage — remembers across visits) or "session" (forgets on reload). */
   memory?: "persistent" | "session";
 }
@@ -113,7 +115,7 @@ class PageAssistantController {
     ].filter((b) => !cfg.capabilities.some((c) => c.name === b.name));
     this.assistant = new Assistant({
       capabilities: [...cfg.capabilities, ...builtins],
-      llm: proxyProvider(cfg.serverUrl),
+      llm: proxyProvider(cfg.serverUrl, cfg.authToken),
       memory,
       appName: cfg.appName,
       persona: cfg.persona,
@@ -129,6 +131,7 @@ class PageAssistantController {
       } else {
         vo = { serverUrl: cfg.serverUrl, ...cfg.voice };
       }
+      if (cfg.authToken) vo = { ...vo, authToken: cfg.authToken };
       this.voice = new Voice(vo);
     }
     const settingsUiOpts = {
@@ -175,8 +178,8 @@ class PageAssistantController {
       } else {
         const vo: VoiceOptions =
           patch.voice === true
-            ? { serverUrl: this.cfg.serverUrl }
-            : { serverUrl: this.cfg.serverUrl, ...patch.voice };
+            ? { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken }
+            : { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken, ...patch.voice };
         this.voice = new Voice(vo);
       }
     }
@@ -194,8 +197,13 @@ class PageAssistantController {
     // Auto-onboard: pull in README/llm.txt so the assistant understands the app.
     if (this.cfg.knowledgeUrl) {
       try {
-        const res = await fetch(this.cfg.knowledgeUrl);
-        if (res.ok) this.assistant.setKnowledge((await res.text()).slice(0, 6000));
+        const url = new URL(this.cfg.knowledgeUrl, location.href);
+        if (url.origin !== location.origin) {
+          this.ui.addMessage("system", "Skipped knowledge fetch: cross-origin URLs are not allowed.");
+        } else {
+          const res = await fetch(url.href);
+          if (res.ok) this.assistant.setKnowledge((await res.text()).slice(0, 6000));
+        }
       } catch {
         /* best-effort */
       }

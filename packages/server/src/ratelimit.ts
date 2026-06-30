@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -39,8 +40,14 @@ export function rateLimit(opts: { windowMs: number; max: number; name?: string }
 export function bearerAuth(token: string | undefined) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!token) return next();
-    const got = req.headers.authorization ?? "";
-    if (got === `Bearer ${token}`) return next();
+    const got = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    try {
+      const a = Buffer.from(got);
+      const b = Buffer.from(token);
+      if (a.length === b.length && timingSafeEqual(a, b)) return next();
+    } catch {
+      /* length mismatch */
+    }
     res.status(401).json({ error: "Missing or invalid bearer token." });
   };
 }

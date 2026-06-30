@@ -127,8 +127,8 @@ export class Assistant {
           messages.push({ role: "tool", toolName: call.name, content: `ERROR: no such capability` });
           continue;
         }
-        // Confirm gate: stage instead of executing.
-        if (cap.confirm && caller === "user") {
+        // Confirm gate: stage instead of executing (user UI or external agent must approve).
+        if (cap.confirm) {
           return {
             message: `Confirm this action? ${cap.description}`,
             invocations,

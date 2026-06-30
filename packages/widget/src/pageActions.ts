@@ -12,6 +12,7 @@ export function pageActionCapabilities(getMap: () => PageMap | undefined, rescan
       description:
         "Navigate to a link or click a button that exists on the current page, identified by its visible label (from the page scan).",
       tags: ["page"],
+      confirm: true,
       parameters: {
         type: "object",
         properties: { label: { type: "string", description: "Visible text of the link/button, e.g. 'Pricing' or 'Sign in'." } },
@@ -21,10 +22,14 @@ export function pageActionCapabilities(getMap: () => PageMap | undefined, rescan
         const map = getMap();
         if (!map) throw new Error("The page hasn't been scanned yet.");
         const want = label.trim().toLowerCase();
-        const hit =
-          map.controls.find((c) => c.label.toLowerCase() === want) ??
-          map.controls.find((c) => c.label.toLowerCase().includes(want));
-        if (!hit) throw new Error(`No link or button labelled "${label}" on this page.`);
+        const exact = map.controls.filter((c) => c.label.trim().toLowerCase() === want);
+        if (exact.length > 1) {
+          throw new Error(`Multiple controls match "${label}" — be more specific.`);
+        }
+        const hit = exact[0];
+        if (!hit) {
+          throw new Error(`No link or button labelled "${label}" on this page.`);
+        }
         const el = document.querySelector(hit.selector) as HTMLElement | null;
         if (!el) throw new Error(`"${hit.label}" was on the page at scan time but is gone now.`);
         el.click();

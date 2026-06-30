@@ -102,3 +102,9 @@ npm test     # proves the anti-hallucination guarantees
 ## License
 
 MIT © Philippos Kontistakis
+
+## For agents / integrators
+
+- **[AGENTS.md](./AGENTS.md)** — read this first when embedding in another app
+- **[INTEGRATION.md](./INTEGRATION.md)** — full setup checklist
+- **[SECURITY.md](./SECURITY.md)** — production hardening

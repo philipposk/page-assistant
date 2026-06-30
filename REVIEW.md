@@ -13,6 +13,13 @@ branch and what is deliberately left as a documented trade-off.
 | S3 | `GET /v1/feedback` exposed all tickets publicly. | Behind the bearer token. |
 | S4 | Ticket `context` accepted arbitrary object shapes (hostile payload smuggling). | Sanitized to known string fields, length-clamped. |
 | S5 | TTS accepted unbounded text (cost amplification). | 400 over 2000 chars; STT 400s on empty/non-buffer body instead of transcribing silence. |
+| S6 | `/v1/agent` skipped bearer auth when `PA_AUTH_TOKEN` set. | Agent route behind same `guard` as LLM/voice. |
+| S7 | `confirm: true` bypassed for `caller: "agent"`. | Confirm gate applies to all callers; agents get `pendingConfirmation`. |
+| S8 | Blind-mode `open_page_link` clicked without confirm; fuzzy label match hit wrong control. | `confirm: true`; exact label match only. |
+| S9 | `knowledgeUrl` could fetch cross-origin content into system prompt. | Widget allows same-origin only. |
+| S10 | STT accepted huge uploads (Whisper cost). | Default 5MB cap (`PA_STT_MAX_BYTES`). |
+| S11 | Bearer token compared with `===` (timing leak). | `timingSafeEqual`. |
+| S12 | Widget couldn't auth to standalone server with `PA_AUTH_TOKEN`. | `authToken` in `PageAssistant.init()` → LLM + voice fetches. |
 
 ### Bugs
 | # | Finding | Fix |

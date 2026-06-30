@@ -101,6 +101,10 @@ export function createServer(config: ServerConfig = {}): Express {
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
         return res.status(400).json({ error: "audio body required (content-type: application/octet-stream)" });
       }
+      const maxBytes = Number(process.env.PA_STT_MAX_BYTES ?? 5 * 1024 * 1024);
+      if (req.body.length > maxBytes) {
+        return res.status(400).json({ error: `audio too large (max ${maxBytes} bytes)` });
+      }
       const text = await transcribe(req.body, "audio.webm");
       res.json({ text });
     } catch (e) {
@@ -119,7 +123,7 @@ export function createServer(config: ServerConfig = {}): Express {
       knowledge: config.knowledge,
       suggestions: config.suggestions,
     });
-    app.post("/v1/agent", agentLimit, async (req, res) => {
+    app.post("/v1/agent", guard, agentLimit, async (req, res) => {
       try {
         const { message, page, history, source } = req.body ?? {};
         if (!message) return res.status(400).json({ error: "message required" });

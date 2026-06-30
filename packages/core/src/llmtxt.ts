@@ -47,7 +47,7 @@ export function generateLlmTxt(meta: LlmTxtMeta, caps: Capability[]): string {
         lines.push(`- \`${k}\`${req}: ${(v as any).type ?? "any"} — ${(v as any).description ?? ""}`);
       }
     }
-    if (c.confirm) lines.push("\n_Requires user confirmation when invoked by the on-page user._");
+    if (c.confirm) lines.push("\n_Requires explicit approval before execution._");
     lines.push("");
   }
   if (meta.feedbackEndpoint) {
