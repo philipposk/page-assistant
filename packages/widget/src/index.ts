@@ -19,42 +19,45 @@ import {
   voiceOptionsFromSettings,
 } from "./settings.js";
 import { openVoiceSettingsModal, mountVoiceSettingsPanel, closeVoiceSettingsModal } from "./settings-ui.js";
+import {
+  ASSISTANT_SETTINGS_CHANGE_EVENT,
+  ASSISTANT_SETTINGS_STORAGE_KEY,
+  getAssistantSettings,
+} from "./assistant-settings.js";
+import {
+  openAssistantSettingsModal,
+  closeAssistantSettingsModal,
+  mountAssistantSettingsPanel,
+} from "./assistant-settings-ui.js";
+import { ChatHistoryStore } from "./chatHistory.js";
+import { formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
+import { trackEvent } from "./analytics.js";
 
 export interface PageAssistantConfig {
-  /** Backend base URL (the @page-assistant/server deployment). */
   serverUrl: string;
   appName?: string;
   persona?: string;
-  /** Real host actions the assistant may perform. The grounding boundary. */
   capabilities: Capability[];
-  /** Return current app state each turn (selected items, current view…). */
   getPageState?: () => Record<string, unknown>;
-  /** Voice: true for browser defaults, or detailed options (server TTS, voice id…). */
   voice?: boolean | VoiceOptions;
-  /** Run a full same-origin scan on first open. Default true. */
   autoScan?: boolean;
-  /** Greet the user when first opened. */
   greeting?: string;
-  /** Background knowledge (README/docs/"what this app is") so the assistant understands the product. */
   knowledge?: string;
-  /** URL to fetch extra knowledge from on first open (e.g. "/llm.txt" or "/README.md"). */
   knowledgeUrl?: string;
-  /** Suggested prompts shown as clickable chips and offered proactively. */
   suggestions?: string[];
-  /** When true, assistant reads replies aloud. Default false (text only). */
   autoSpeak?: boolean;
-  /** Open assistant / voice settings (gear). Omit to use the built-in voice settings modal. */
+  /** Use extended settings modal (model, theme, chat export). Default true. */
+  useExtendedSettings?: boolean;
   onSettings?: () => void;
-  /** Link shown in the built-in settings modal footer (e.g. "/settings#assistant"). */
   settingsPageUrl?: string;
-  /** localStorage key for voice prefs. Default `page_assistant_voice_settings`. */
   settingsStorageKey?: string;
-  /** Load TTS/STT voice options from stored settings on init + when settings change. Default true. */
+  assistantSettingsStorageKey?: string;
+  chatHistoryStorageKey?: string;
   useVoiceSettings?: boolean;
-  /** Bearer token for standalone server when PA_AUTH_TOKEN is set. Prefer host session auth in production. */
   authToken?: string;
-  /** "persistent" (default, localStorage — remembers across visits) or "session" (forgets on reload). */
   memory?: "persistent" | "session";
+  /** Disable chat history sidebar. Default false (enabled). */
+  disableChatHistory?: boolean;
 }
 
 export { capability } from "./capability.js";
@@ -62,6 +65,15 @@ export type { Capability } from "@page-assistant/core";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
+export { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY } from "./chatHistory.js";
+export {
+  getAssistantSettings,
+  setAssistantSettings,
+  DEFAULT_MODELS,
+  ASSISTANT_SETTINGS_STORAGE_KEY,
+  type AssistantSettings,
+  type ThemeMode,
+} from "./assistant-settings.js";
 export {
   getVoiceSettings,
   setVoiceSettings,
@@ -81,28 +93,53 @@ export {
   closeVoiceSettingsModal,
   type VoiceSettingsUIOptions,
 } from "./settings-ui.js";
+export {
+  mountAssistantSettingsPanel,
+  openAssistantSettingsModal,
+  closeAssistantSettingsModal,
+  type AssistantSettingsUIOptions,
+} from "./assistant-settings-ui.js";
+export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
+export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 
 class PageAssistantController {
   private assistant: Assistant;
   private ui: WidgetUI;
   private voice?: Voice;
   private history: ChatMessage[] = [];
+  private chatStore: ChatHistoryStore;
+  private activeChatId: string | null = null;
   private scanned = false;
   private listening = false;
   private ttsEnabled: boolean;
   private pending?: { name: string; args: Record<string, unknown> };
   private map?: PageContext["map"];
   private settingsKey: string;
+  private assistantSettingsKey: string;
   private onSettingsChange: () => void;
+  private onAssistantSettingsChange: () => void;
 
   constructor(private cfg: PageAssistantConfig) {
     this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
+    this.assistantSettingsKey = cfg.assistantSettingsStorageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
+    const assistantSettings = getAssistantSettings(this.assistantSettingsKey);
     const stored = getVoiceSettings(this.settingsKey);
     const useStored = cfg.useVoiceSettings !== false;
     this.ttsEnabled = cfg.autoSpeak ?? (useStored ? stored.autoSpeak : false);
-    // Persistent memory by default (localStorage); opt out with memory: "session".
+
+    this.chatStore = new ChatHistoryStore(cfg.chatHistoryStorageKey);
+    if (!cfg.disableChatHistory) {
+      const active = this.chatStore.getActive();
+      if (active) {
+        this.activeChatId = active.id;
+        this.history = [...active.messages];
+      } else {
+        const created = this.chatStore.create({ model: assistantSettings.model });
+        this.activeChatId = created.id;
+      }
+    }
+
     const memory = cfg.memory === "session" ? new InMemoryStore() : new LocalMemoryStore();
-    // Built-ins: remember facts + act on any scanned page. Host capabilities win on name clash.
     const builtins = [
       rememberFactCapability,
       ...pageActionCapabilities(
@@ -113,44 +150,65 @@ class PageAssistantController {
         }
       ),
     ].filter((b) => !cfg.capabilities.some((c) => c.name === b.name));
+
     this.assistant = new Assistant({
       capabilities: [...cfg.capabilities, ...builtins],
-      llm: proxyProvider(cfg.serverUrl, cfg.authToken),
+      llm: proxyProvider(cfg.serverUrl, cfg.authToken, () => getAssistantSettings(this.assistantSettingsKey).model),
       memory,
       appName: cfg.appName,
       persona: cfg.persona,
       knowledge: cfg.knowledge,
       suggestions: cfg.suggestions,
     });
+
     if (cfg.voice !== false) {
       let vo: VoiceOptions;
       if (cfg.voice === true || cfg.voice === undefined) {
-        vo = useStored
-          ? voiceOptionsFromSettings(cfg.serverUrl, stored)
-          : { serverUrl: cfg.serverUrl };
+        vo = useStored ? voiceOptionsFromSettings(cfg.serverUrl, stored) : { serverUrl: cfg.serverUrl };
       } else {
         vo = { serverUrl: cfg.serverUrl, ...cfg.voice };
       }
       if (cfg.authToken) vo = { ...vo, authToken: cfg.authToken };
       this.voice = new Voice(vo);
     }
+
     const settingsUiOpts = {
       storageKey: this.settingsKey,
       settingsPageUrl: cfg.settingsPageUrl,
       title: cfg.appName ? `${cfg.appName} assistant` : "Page assistant",
+      chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
+      serverUrl: cfg.serverUrl,
     };
+
     this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
-      onSend: (t) => this.handleUser(t),
+      onSend: (t, attachments) => this.handleUser(t, attachments),
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),
       onToggle: (open) => this.handleToggle(open),
       onSettings: () =>
-        cfg.onSettings?.() ?? openVoiceSettingsModal(settingsUiOpts),
+        cfg.onSettings?.() ??
+        (cfg.useExtendedSettings !== false
+          ? openAssistantSettingsModal(settingsUiOpts)
+          : openVoiceSettingsModal(settingsUiOpts)),
       onTtsToggle: (on) => {
         this.ttsEnabled = on;
       },
+      onNewChat: () => this.newChat(),
+      onSelectChat: (id) => this.switchChat(id),
+      onExportChat: () => this.exportCurrentChat(),
+    }, {
+      chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
+      theme: assistantSettings.theme,
+      sidebarOpen: assistantSettings.sidebarOpen,
     });
+
+    if (this.activeChatId && this.history.length) {
+      this.ui.loadMessages(this.history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system"));
+      this.ui.setActiveChat(this.activeChatId);
+    }
+
     this.ui.setTtsEnabled(this.ttsEnabled);
+
     this.onSettingsChange = () => {
       if (cfg.useVoiceSettings === false || cfg.voice === false) return;
       const s = getVoiceSettings(this.settingsKey);
@@ -159,12 +217,19 @@ class PageAssistantController {
         voice: voiceOptionsFromSettings(cfg.serverUrl, s),
       });
     };
+    this.onAssistantSettingsChange = () => {
+      const s = getAssistantSettings(this.assistantSettingsKey);
+      this.ui.setTheme(s.theme);
+      this.ui.setSidebarOpen(s.sidebarOpen);
+    };
     window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
+    window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, this.onAssistantSettingsChange);
     injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl);
   }
 
   dispose() {
     window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
+    window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, this.onAssistantSettingsChange);
   }
 
   updateConfig(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
@@ -185,16 +250,69 @@ class PageAssistantController {
     }
   }
 
+  private newChat() {
+    const model = getAssistantSettings(this.assistantSettingsKey).model;
+    const session = this.chatStore.create({ model });
+    this.activeChatId = session.id;
+    this.history = [];
+    this.pending = undefined;
+    this.ui.clearLog();
+    this.ui.setActiveChat(session.id);
+    trackEvent("chat_new", { id: session.id }, this.analyticsUrl());
+  }
+
+  private switchChat(id: string) {
+    const session = this.chatStore.get(id);
+    if (!session) return;
+    this.persistCurrentChat();
+    this.activeChatId = id;
+    this.chatStore.setActive(id);
+    this.history = [...session.messages];
+    this.pending = undefined;
+    this.ui.clearLog();
+    this.ui.loadMessages(this.history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system"));
+    this.ui.setActiveChat(id);
+    trackEvent("chat_switch", { id }, this.analyticsUrl());
+  }
+
+  private persistCurrentChat() {
+    if (!this.activeChatId || this.cfg.disableChatHistory) return;
+    const model = getAssistantSettings(this.assistantSettingsKey).model;
+    this.chatStore.saveMessages(this.activeChatId, this.history, { model });
+  }
+
+  private exportCurrentChat() {
+    if (!this.activeChatId) return;
+    const json = this.chatStore.share(this.activeChatId);
+    if (!json) return;
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "chat-export.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    trackEvent("chat_export", { id: this.activeChatId }, this.analyticsUrl());
+  }
+
+  private analyticsUrl() {
+    const s = getAssistantSettings(this.assistantSettingsKey);
+    return s.analyticsEnabled ? this.cfg.serverUrl : undefined;
+  }
+
   private async handleToggle(open: boolean) {
     if (!open) {
-      this.voice?.stop(); // closing the panel shuts the assistant up
+      this.voice?.stop();
+      this.persistCurrentChat();
       return;
     }
     if (this.scanned) return;
     this.scanned = true;
-    if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
-    if (this.cfg.suggestions?.length) this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
-    // Auto-onboard: pull in README/llm.txt so the assistant understands the app.
+    trackEvent("widget_open", {}, this.analyticsUrl());
+    if (this.cfg.greeting && !this.history.length) this.ui.addMessage("assistant", this.cfg.greeting);
+    if (this.cfg.suggestions?.length && !this.history.length) {
+      this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+    }
     if (this.cfg.knowledgeUrl) {
       try {
         const url = new URL(this.cfg.knowledgeUrl, location.href);
@@ -231,18 +349,19 @@ class PageAssistantController {
     };
   }
 
-  private async handleUser(text: string) {
-    // Typing a new message abandons any staged confirmation — it must not fire later.
+  private async handleUser(text: string, attachments?: FileAttachment[]) {
     if (this.pending) {
       this.pending = undefined;
       this.ui.addMessage("system", "Previous pending action cancelled.");
     }
-    this.ui.addMessage("user", text);
+    const message = formatAttachmentsForPrompt(text, attachments ?? []);
+    if (!message.trim()) return;
+    this.ui.addMessage("user", text + (attachments?.length ? `\n📎 ${attachments.map((a) => a.name).join(", ")}` : ""));
     this.ui.setState("thinking");
     try {
-      const res = await this.assistant.chat({ message: text, page: this.pageContext(), history: this.history });
-      this.history.push({ role: "user", content: text }, { role: "assistant", content: res.message });
-      if (this.history.length > 20) this.history = this.history.slice(-20);
+      const res = await this.assistant.chat({ message, page: this.pageContext(), history: this.history });
+      this.history.push({ role: "user", content: message }, { role: "assistant", content: res.message });
+      this.persistCurrentChat();
 
       if (res.pendingConfirmation) {
         this.pending = { name: res.pendingConfirmation.name, args: res.pendingConfirmation.args };
@@ -252,6 +371,7 @@ class PageAssistantController {
       }
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
+      trackEvent("message_sent", { len: message.length }, this.analyticsUrl());
     } catch (e) {
       this.ui.addMessage("system", `Error: ${e instanceof Error ? e.message : e}`);
       this.ui.setState("idle");
@@ -267,6 +387,8 @@ class PageAssistantController {
     this.ui.setState("thinking");
     try {
       const res = await this.assistant.confirmAndRun(this.pending.name, this.pending.args, this.pageContext());
+      this.history.push({ role: "assistant", content: res.message });
+      this.persistCurrentChat();
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
     } catch (e) {
@@ -286,7 +408,7 @@ class PageAssistantController {
     try {
       await this.voice.speak(text);
     } catch {
-      /* a TTS failure must not freeze the mascot in "talking" */
+      /* TTS failure must not freeze mascot */
     }
     this.ui.setState("idle");
   }
@@ -317,22 +439,22 @@ class PageAssistantController {
 let instance: PageAssistantController | undefined;
 
 export const PageAssistant = {
-  /** Mount the assistant on the current page. Call once after the app has loaded. */
   init(cfg: PageAssistantConfig) {
     if (instance) return instance;
     instance = new PageAssistantController(cfg);
     return instance;
   },
-  /** Update voice / read-aloud after init (e.g. when user changes settings). */
   configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
     instance?.updateConfig(patch);
   },
   openVoiceSettings: openVoiceSettingsModal,
   closeVoiceSettings: closeVoiceSettingsModal,
   mountVoiceSettingsPanel,
+  openAssistantSettings: openAssistantSettingsModal,
+  closeAssistantSettings: closeAssistantSettingsModal,
+  mountAssistantSettingsPanel,
 };
 
-/** Add <link rel="llm"> + meta so agents scanning the page HTML discover the manifest. */
 function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
   if (typeof document === "undefined" || document.querySelector('link[rel="llm"]')) return;
   const base = (serverUrl || "").replace(/\/$/, "");
@@ -346,5 +468,4 @@ function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
   document.head.appendChild(meta);
 }
 
-// UMD-ish global for <script> embedding.
 if (typeof window !== "undefined") (window as any).PageAssistant = PageAssistant;

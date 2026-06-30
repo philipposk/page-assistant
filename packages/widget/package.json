@@ -1,6 +1,6 @@
 {
   "name": "@page-assistant/widget",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Embeddable browser widget: floating voice assistant, page scanner, grounded actions.",
   "license": "MIT",
   "type": "module",
@@ -14,7 +14,7 @@
     "build": "tsc -p tsconfig.json && node build.mjs"
   },
   "dependencies": {
-    "@page-assistant/core": "0.2.0"
+    "@page-assistant/core": "0.3.0"
   },
   "devDependencies": {
     "@types/dom-speech-recognition": "^0.0.4"

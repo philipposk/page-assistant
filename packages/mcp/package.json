@@ -1,0 +1,22 @@
+{
+  "name": "@page-assistant/mcp",
+  "version": "0.3.0",
+  "description": "MCP server exposing page-assistant agent endpoint to Cursor, Claude Desktop, etc.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "page-assistant-mcp": "./dist/index.js" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

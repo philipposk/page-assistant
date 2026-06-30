@@ -13,7 +13,7 @@ import {
   type LlmTxtMeta,
   type TicketStore,
 } from "@page-assistant/core";
-import { routerFromEnv } from "./llm/router.js";
+import { routerFromEnv, AVAILABLE_MODELS } from "./llm/router.js";
 import { synthesize, transcribe } from "./voice.js";
 import { rateLimit, bearerAuth } from "./ratelimit.js";
 
@@ -75,11 +75,29 @@ export function createServer(config: ServerConfig = {}): Express {
   // --- LLM proxy: one tool-calling round. The widget's grounding loop drives this. ---
   app.post("/v1/llm/complete", guard, llmLimit, async (req, res) => {
     try {
-      const out = await llm.complete(req.body);
+      const { model, ...rest } = req.body ?? {};
+      const out = await llm.complete({ ...rest, model });
       res.json(out);
     } catch (e) {
       res.status(502).json({ error: String(e instanceof Error ? e.message : e) });
     }
+  });
+
+  app.get("/v1/models", guard, (_req, res) => {
+    res.json({ models: AVAILABLE_MODELS });
+  });
+
+  // --- Anonymous usage analytics (opt-in from widget) ---
+  const analyticsEvents: Array<{ type: string; ts: string; meta?: Record<string, unknown> }> = [];
+  app.post("/v1/analytics", guard, (req, res) => {
+    const { type, ts, meta } = req.body ?? {};
+    if (typeof type !== "string") return res.status(400).json({ error: "type required" });
+    analyticsEvents.push({ type, ts: ts ?? new Date().toISOString(), meta });
+    if (analyticsEvents.length > 10_000) analyticsEvents.splice(0, analyticsEvents.length - 10_000);
+    res.json({ ok: true });
+  });
+  app.get("/v1/analytics", guard, (_req, res) => {
+    res.json({ events: analyticsEvents.slice(-500) });
   });
 
   // --- Voice ---
@@ -185,7 +203,26 @@ export function createServer(config: ServerConfig = {}): Express {
       });
   }
 
-  app.get("/v1/health", (_req, res) => res.json({ ok: true }));
+  app.get("/v1/health", (_req, res) => res.json({ ok: true, version: "0.3.0" }));
+
+  app.get("/v1/openapi.json", (_req, res) => {
+    res.json({
+      openapi: "3.0.0",
+      info: { title: "Page Assistant API", version: "0.3.0" },
+      paths: {
+        "/v1/llm/complete": { post: { summary: "LLM tool-calling round" } },
+        "/v1/voice/tts": { post: { summary: "Text-to-speech" } },
+        "/v1/voice/stt": { post: { summary: "Speech-to-text" } },
+        "/v1/agent": { post: { summary: "External agent endpoint" } },
+        "/v1/models": { get: { summary: "Available LLM models" } },
+        "/v1/analytics": { get: { summary: "Usage events" }, post: { summary: "Track event" } },
+        "/v1/feedback": { get: { summary: "List tickets" }, post: { summary: "Submit ticket" } },
+        "/v1/health": { get: { summary: "Health check" } },
+        "/llm.txt": { get: { summary: "Human-readable capability manifest" } },
+        "/.well-known/llm-actions.json": { get: { summary: "Machine capability manifest" } },
+      },
+    });
+  });
   return app;
 }
 

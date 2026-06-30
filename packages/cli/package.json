@@ -1,0 +1,21 @@
+{
+  "name": "@page-assistant/cli",
+  "version": "0.3.0",
+  "description": "CLI for page-assistant: health check, chat, serve proxy.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": { "page-assistant": "./dist/index.js" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@page-assistant/server": "0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

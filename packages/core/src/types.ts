@@ -130,6 +130,8 @@ export interface LLMCompletionInput {
   /** force a specific tool (grounding: forced-factual selection) */
   forceTool?: string;
   temperature?: number;
+  /** Optional model override (passed from widget settings through server proxy). */
+  model?: string;
 }
 
 export interface LLMCompletionOutput {
