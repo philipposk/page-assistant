@@ -102,9 +102,37 @@ mountVoiceSettingsPanel(document.getElementById("pa-voice-settings")!);
 - Mic: browser (free) or server Whisper
 - No custom UI needed unless you override `onSettings`
 
-## 6. Agent discovery (llm.txt)
+## 6. Agent discovery (llm.txt) — the second capability list
 
-Serve generated manifests so Cursor, Claude, or other agents can discover and call your assistant:
+**Capabilities register in two separate places.** The list you pass to
+`PageAssistant.init()` runs in the **browser** and powers the on-page assistant. It is
+**not** the same list that backs `/v1/agent`, `/llm.txt`, and
+`/.well-known/llm-actions.json` — those are driven by a **separate**
+`ServerConfig.capabilities` list you pass to `createServer()` on the server. They do
+**not** carry over. If you want external agents to drive your app, register the
+relevant actions on the server too:
+
+```typescript
+import { createServer } from "@page-assistant/server";
+
+createServer({
+  appName: "My App",
+  capabilities: serverCaps,          // separate from the widget's browser caps
+  llmTxt: {
+    appName: "My App",
+    appUrl: "https://myapp.com",
+    description: "What the app does.",
+    agentEndpoint: "https://myapp.com/v1/agent",
+  },
+}).listen(8787);
+```
+
+`/v1/agent` and the discovery files **only mount when `capabilities` are present** — a
+plain proxy returns 404 for them. See `examples/full-server.mjs` for a runnable
+capability-backed server, and point the CLI `chat` command or the `@page-assistant/mcp`
+server at it via `PA_SERVER_URL`.
+
+The low-level generators are also exported if you host the manifests yourself:
 
 ```typescript
 import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";

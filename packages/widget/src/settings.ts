@@ -20,6 +20,49 @@ export type VoiceSettings = {
 export const VOICE_SETTINGS_STORAGE_KEY = "page_assistant_voice_settings";
 export const VOICE_SETTINGS_CHANGE_EVENT = "pa-voice-settings-change";
 
+/**
+ * What the server can actually do, reported by `GET {serverUrl}/v1/voice/capabilities`.
+ * Lets the settings UI grey out options the server has no key for, so the user never
+ * picks "Rachel" and silently hears the robotic browser voice.
+ */
+export type VoiceCapabilities = {
+  tts: { server: boolean; providers: TtsProvider[] };
+  stt: { server: boolean };
+};
+
+/** Assume browser-only when the endpoint is missing or unreachable — never crash. */
+export const BROWSER_ONLY_CAPABILITIES: VoiceCapabilities = {
+  tts: { server: false, providers: [] },
+  stt: { server: false },
+};
+
+/**
+ * Fetch server voice capabilities. Degrades gracefully: any failure (404, network,
+ * bad JSON) resolves to browser-only rather than rejecting, so callers never need a
+ * try/catch and the UI still renders.
+ */
+export async function fetchVoiceCapabilities(
+  serverUrl: string | undefined,
+  signal?: AbortSignal
+): Promise<VoiceCapabilities> {
+  if (!serverUrl || typeof fetch === "undefined") return BROWSER_ONLY_CAPABILITIES;
+  const base = serverUrl.replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/v1/voice/capabilities`, { signal });
+    if (!res.ok) return BROWSER_ONLY_CAPABILITIES;
+    const raw = (await res.json()) as Partial<VoiceCapabilities>;
+    return {
+      tts: {
+        server: Boolean(raw?.tts?.server),
+        providers: Array.isArray(raw?.tts?.providers) ? (raw!.tts!.providers as TtsProvider[]) : [],
+      },
+      stt: { server: Boolean(raw?.stt?.server) },
+    };
+  } catch {
+    return BROWSER_ONLY_CAPABILITIES;
+  }
+}
+
 const DEFAULTS: VoiceSettings = {
   autoSpeak: false,
   ttsMode: "server",

@@ -1,6 +1,7 @@
 import type { LLMProvider, LLMCompletionInput } from "@page-assistant/core";
 import { anthropicProvider } from "./anthropic.js";
 import { openaiProvider } from "./openai.js";
+import { HttpProviderError } from "./errors.js";
 
 /** Available models for widget settings UI and /v1/models endpoint. */
 export const AVAILABLE_MODELS = [
@@ -25,17 +26,29 @@ export function routerFromEnv(env: NodeJS.ProcessEnv = process.env): LLMProvider
       const model = input.model;
       if (model) {
         const targeted = providerForModel(model, env);
-        if (targeted) return targeted.complete({ ...input, model: undefined });
+        // An explicit model override must NOT silently fall back to the default chain —
+        // that would bill a different model than asked for. Fail loudly instead.
+        if (!targeted) {
+          throw new Error(
+            `Requested model "${model}" has no configured provider (need the matching API key). ` +
+              `Set the key for that model, or omit "model" to use the default chain.`
+          );
+        }
+        return targeted.complete({ ...input, model: undefined });
       }
-      let lastErr: unknown;
+      const errors: string[] = [];
       for (const p of chain) {
         try {
           return await p.complete({ ...input, model: undefined });
         } catch (e) {
-          lastErr = e;
+          // A 4xx is a request/config problem (bad key, malformed body). Trying the next
+          // provider just wastes spend and hides the real cause — surface it immediately.
+          if (e instanceof HttpProviderError && e.isClientError) throw e;
+          errors.push(e instanceof Error ? e.message : String(e));
         }
       }
-      throw lastErr;
+      // Every provider failed transiently — surface all causes, not just the last.
+      throw new Error(`All LLM providers failed: ${errors.join(" | ")}`);
     },
   };
 }

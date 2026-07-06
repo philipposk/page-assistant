@@ -15,59 +15,73 @@ export interface ChatSidebarHandlers {
   onToggle: (open: boolean) => void;
 }
 
+// Uses the theme CSS variables (--pa-*) so the sidebar matches light/dark like the rest
+// of the panel instead of hardcoding dark colors.
 const SIDEBAR_CSS = `
 .sidebar {
-  width: 220px; min-width: 220px; background: #0b1310; border-right: 1px solid #1f3a2c;
+  width: 220px; min-width: 220px; background: var(--pa-bg-sidebar); border-right: 1px solid var(--pa-border);
   display: flex; flex-direction: column; overflow: hidden; transition: width .2s, min-width .2s;
+  position: relative;
 }
 .sidebar.collapsed { width: 0; min-width: 0; border: none; }
-.sidebar-head { padding: 10px; border-bottom: 1px solid #1f3a2c; display: flex; gap: 6px; align-items: center; }
+.sidebar-head { padding: 10px; border-bottom: 1px solid var(--pa-border); display: flex; gap: 6px; align-items: center; }
 .sidebar-head input {
-  flex: 1; background: #0f1715; border: 1px solid #244234; color: #e7f5ec;
+  flex: 1; background: var(--pa-bg-input); border: 1px solid var(--pa-border); color: var(--pa-text);
   border-radius: 8px; padding: 6px 8px; font-size: 12px; outline: none;
 }
 .sidebar-head button, .new-chat {
-  background: #1f3a2c; border: none; color: #9ff0c2; border-radius: 8px; cursor: pointer;
+  background: var(--pa-border); border: none; color: var(--pa-text); border-radius: 8px; cursor: pointer;
   padding: 6px 8px; font-size: 12px; white-space: nowrap;
 }
-.new-chat { margin: 8px; width: calc(100% - 16px); font-weight: 600; }
+.new-chat { margin: 8px; width: calc(100% - 16px); font-weight: 600; background: var(--pa-accent); color: #fff; }
 .sidebar-list { flex: 1; overflow-y: auto; padding: 4px 0; }
 .section-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #6a8a7a;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--pa-text-muted);
   padding: 8px 12px 4px; font-weight: 600;
 }
 .chat-item {
   display: flex; align-items: center; gap: 6px; padding: 8px 10px; cursor: pointer;
-  font-size: 13px; color: #bfe9cd; border-left: 3px solid transparent;
+  font-size: 13px; color: var(--pa-text); border-left: 3px solid transparent;
 }
-.chat-item:hover { background: #16241c; }
-.chat-item.active { background: #1a2a22; border-left-color: #4ade80; }
+.chat-item:hover { background: var(--pa-border); }
+.chat-item.active { background: var(--pa-bg-msg-asst); border-left-color: var(--pa-accent); }
 .chat-item.unread .chat-title { font-weight: 700; }
 .chat-item.pinned .chat-title::before { content: "📌 "; font-size: 10px; }
 .chat-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-menu-btn {
-  background: none; border: none; color: #6a8a7a; cursor: pointer; padding: 2px 4px;
+  background: none; border: none; color: var(--pa-text-muted); cursor: pointer; padding: 2px 4px;
   border-radius: 4px; font-size: 14px; opacity: 0;
 }
-.chat-item:hover .chat-menu-btn { opacity: 1; }
-.chat-menu-btn:hover { background: #244234; color: #e7f5ec; }
+.chat-item:hover .chat-menu-btn, .chat-item:focus-within .chat-menu-btn { opacity: 1; }
+.chat-menu-btn:hover { background: var(--pa-border); color: var(--pa-text); }
 .ctx-menu {
-  position: fixed; z-index: 2147483647; background: #12211a; border: 1px solid #244234;
+  position: fixed; z-index: 2147483647; background: var(--pa-bg-head); border: 1px solid var(--pa-border);
   border-radius: 8px; padding: 4px 0; min-width: 160px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
 }
 .ctx-menu button {
   display: block; width: 100%; text-align: left; background: none; border: none;
-  color: #e7f5ec; padding: 8px 14px; font-size: 13px; cursor: pointer;
+  color: var(--pa-text); padding: 8px 14px; font-size: 13px; cursor: pointer;
 }
-.ctx-menu button:hover { background: #1d3328; }
+.ctx-menu button:hover { background: var(--pa-border); }
 .ctx-menu button.danger { color: #f87171; }
 .show-more {
-  display: block; width: calc(100% - 16px); margin: 6px 8px; background: none; border: 1px dashed #244234;
-  color: #9ab4a6; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer;
+  display: block; width: calc(100% - 16px); margin: 6px 8px; background: none; border: 1px dashed var(--pa-border);
+  color: var(--pa-text-muted); border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer;
 }
-.show-more:hover { background: #16241c; color: #e7f5ec; }
+.show-more:hover { background: var(--pa-border); color: var(--pa-text); }
 .toggle-sidebar {
-  background: none; border: none; color: #9ab4a6; cursor: pointer; font-size: 16px; padding: 2px 6px;
+  background: none; border: none; color: var(--pa-text-muted); cursor: pointer; font-size: 16px; padding: 2px 6px;
+}
+/* On narrow viewports the sidebar overlays the panel instead of squeezing the chat. */
+@media (max-width: 520px) {
+  .sidebar:not(.collapsed) {
+    position: absolute; inset: 0 auto 0 0; width: 80%; min-width: 0; max-width: 260px;
+    z-index: 5; box-shadow: 6px 0 24px rgba(0,0,0,.4);
+  }
+  .chat-menu-btn { opacity: 1; } /* touch has no hover — keep the ⋯ menu reachable */
+}
+@media (hover: none) {
+  .chat-menu-btn { opacity: 1; }
 }
 `;
 
@@ -80,6 +94,8 @@ export class ChatSidebar {
   private ctxMenu?: HTMLDivElement;
   private showLimit = PAGE_SIZE;
   private query = "";
+  private onHistoryChange = () => this.refresh();
+  private outsideClickHandler?: (e: Event) => void;
 
   constructor(
     private store: ChatHistoryStore,
@@ -96,6 +112,7 @@ export class ChatSidebar {
     const head = el("div", "sidebar-head");
     this.searchInput = el("input") as HTMLInputElement;
     this.searchInput.placeholder = "Search chats…";
+    this.searchInput.setAttribute("aria-label", "Search chats");
     this.searchInput.oninput = () => {
       this.query = this.searchInput.value;
       this.handlers.onSearch(this.query);
@@ -104,19 +121,27 @@ export class ChatSidebar {
     const toggleBtn = el("button", "toggle-sidebar") as HTMLButtonElement;
     toggleBtn.textContent = "◀";
     toggleBtn.title = "Collapse sidebar";
+    toggleBtn.setAttribute("aria-label", "Collapse chat history sidebar");
     toggleBtn.onclick = () => this.handlers.onToggle(false);
     head.append(this.searchInput, toggleBtn);
 
     const newBtn = el("button", "new-chat") as HTMLButtonElement;
     newBtn.textContent = "+ New chat";
+    newBtn.setAttribute("aria-label", "Start a new chat");
     newBtn.onclick = () => this.handlers.onNew();
 
     this.listEl = el("div", "sidebar-list") as HTMLDivElement;
     this.el.append(head, newBtn, this.listEl);
     this.refresh();
 
-    window.addEventListener(CHAT_HISTORY_CHANGE_EVENT, () => this.refresh());
+    window.addEventListener(CHAT_HISTORY_CHANGE_EVENT, this.onHistoryChange);
     return this.el;
+  }
+
+  /** Detach the history listener and any open menu (for widget teardown). */
+  destroy() {
+    window.removeEventListener(CHAT_HISTORY_CHANGE_EVENT, this.onHistoryChange);
+    this.closeContextMenu();
   }
 
   setActive(id: string | null) {
@@ -126,9 +151,11 @@ export class ChatSidebar {
 
   setCollapsed(collapsed: boolean) {
     this.el.classList.toggle("collapsed", collapsed);
+    if (collapsed) this.closeContextMenu();
   }
 
   refresh() {
+    this.closeContextMenu();
     this.listEl.innerHTML = "";
     const sessions = this.query ? this.store.search(this.query) : this.store.list();
     const groups = this.store.listGroups();
@@ -205,6 +232,8 @@ export class ChatSidebar {
 
     const menuBtn = el("button", "chat-menu-btn") as HTMLButtonElement;
     menuBtn.textContent = "⋯";
+    menuBtn.setAttribute("aria-label", `Actions for "${session.title}"`);
+    menuBtn.setAttribute("aria-haspopup", "menu");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       this.openContextMenu(session, menuBtn);
@@ -218,6 +247,7 @@ export class ChatSidebar {
   private openContextMenu(session: ChatSession, anchor: HTMLElement) {
     this.closeContextMenu();
     const menu = el("div", "ctx-menu") as HTMLDivElement;
+    menu.setAttribute("role", "menu");
     const items: Array<{ label: string; action: () => void; danger?: boolean }> = [
       { label: "Rename", action: () => this.promptRename(session) },
       { label: "Fork", action: () => this.handlers.onFork(session.id) },
@@ -225,11 +255,20 @@ export class ChatSidebar {
       { label: "Mark unread", action: () => this.handlers.onMarkUnread(session.id) },
       { label: "Share (copy JSON)", action: () => this.handlers.onShare(session.id) },
       { label: session.archived ? "Unarchive" : "Archive", action: () => this.handlers.onArchive(session.id) },
-      { label: "Delete", action: () => this.handlers.onDelete(session.id), danger: true },
+      {
+        label: "Delete",
+        action: () => {
+          // Deletion is destructive and irreversible — confirm first.
+          if (typeof confirm === "function" && !confirm(`Delete "${session.title}"? This can't be undone.`)) return;
+          this.handlers.onDelete(session.id);
+        },
+        danger: true,
+      },
     ];
     for (const it of items) {
       const btn = el("button") as HTMLButtonElement;
       btn.textContent = it.label;
+      btn.setAttribute("role", "menuitem");
       if (it.danger) btn.classList.add("danger");
       btn.onclick = () => {
         this.closeContextMenu();
@@ -237,21 +276,33 @@ export class ChatSidebar {
       };
       menu.appendChild(btn);
     }
-    document.body.appendChild(menu);
+    // Render INSIDE the shadow root (the sidebar element) so the .ctx-menu styles that
+    // live in the shadow tree actually apply — appending to document.body left it
+    // unstyled at the page bottom. position:fixed still positions it viewport-relative.
+    this.el.appendChild(menu);
     const rect = anchor.getBoundingClientRect();
-    menu.style.top = `${rect.bottom + 4}px`;
-    menu.style.left = `${Math.min(rect.left, window.innerWidth - 180)}px`;
+    const width = 180;
+    menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 8)}px`;
+    menu.style.left = `${Math.min(rect.left, window.innerWidth - width)}px`;
     this.ctxMenu = menu;
+    this.outsideClickHandler = (e: Event) => {
+      if (this.ctxMenu && !this.ctxMenu.contains(e.target as Node)) this.closeContextMenu();
+    };
     setTimeout(() => {
-      document.addEventListener("click", this.closeContextMenuOnce, { once: true });
+      // Listen inside the shadow root AND on document so a click anywhere dismisses it.
+      this.el.getRootNode().addEventListener("click", this.outsideClickHandler!, { capture: true });
+      document.addEventListener("click", this.outsideClickHandler!, { capture: true });
     }, 0);
   }
-
-  private closeContextMenuOnce = () => this.closeContextMenu();
 
   private closeContextMenu() {
     this.ctxMenu?.remove();
     this.ctxMenu = undefined;
+    if (this.outsideClickHandler) {
+      this.el?.getRootNode().removeEventListener("click", this.outsideClickHandler, { capture: true });
+      document.removeEventListener("click", this.outsideClickHandler, { capture: true });
+      this.outsideClickHandler = undefined;
+    }
   }
 
   private promptRename(session: ChatSession) {

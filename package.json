@@ -1,6 +1,6 @@
 {
   "name": "page-assistant-monorepo",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Embeddable, grounded, voice-capable page assistant that can read any web app and perform real actions for the user.",
   "license": "MIT",
@@ -13,12 +13,12 @@
   ],
   "scripts": {
     "build": "npm run build -w packages/core && npm run build -w packages/widget && npm run build -w packages/server && npm run build -w packages/mcp && npm run build -w packages/cli",
-    "typecheck": "tsc -b packages/core packages/widget packages/server",
+    "typecheck": "tsc -b packages/core packages/widget packages/server && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/mcp/tsconfig.json",
     "test": "node --test packages/core/test/*.test.mjs",
     "dev:server": "npm run dev -w packages/server"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.25.0",
     "typescript": "^5.6.0"
   }
 }

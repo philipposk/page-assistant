@@ -6,8 +6,8 @@ import {
   type ChatMessage,
   type PageContext,
 } from "@page-assistant/core";
-import { proxyProvider } from "./llmProxy.js";
-import { Voice, type VoiceOptions } from "./voice.js";
+import { proxyProvider, ProxyError } from "./llmProxy.js";
+import { Voice, VoiceError, type VoiceOptions } from "./voice.js";
 import { WidgetUI } from "./ui.js";
 import { fullScan, scanPage } from "./scanner.js";
 import { LocalMemoryStore } from "./localMemory.js";
@@ -58,6 +58,14 @@ export interface PageAssistantConfig {
   memory?: "persistent" | "session";
   /** Disable chat history sidebar. Default false (enabled). */
   disableChatHistory?: boolean;
+  /**
+   * Enable image attachments. OFF by default: core has no vision plumbing, so accepting
+   * images without a vision-capable backend would be a placebo (the model never sees them).
+   * Only set true if your backend can actually process image content parts.
+   */
+  imagesEnabled?: boolean;
+  /** Per-request LLM timeout in ms (default 30000). */
+  requestTimeoutMs?: number;
 }
 
 export { capability } from "./capability.js";
@@ -118,6 +126,8 @@ class PageAssistantController {
   private assistantSettingsKey: string;
   private onSettingsChange: () => void;
   private onAssistantSettingsChange: () => void;
+  private lastTurn?: { text: string; attachments?: FileAttachment[] };
+  private greetedChatId: string | null = null;
 
   constructor(private cfg: PageAssistantConfig) {
     this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
@@ -153,7 +163,12 @@ class PageAssistantController {
 
     this.assistant = new Assistant({
       capabilities: [...cfg.capabilities, ...builtins],
-      llm: proxyProvider(cfg.serverUrl, cfg.authToken, () => getAssistantSettings(this.assistantSettingsKey).model),
+      llm: proxyProvider(
+        cfg.serverUrl,
+        cfg.authToken,
+        () => getAssistantSettings(this.assistantSettingsKey).model,
+        cfg.requestTimeoutMs
+      ),
       memory,
       appName: cfg.appName,
       persona: cfg.persona,
@@ -196,15 +211,19 @@ class PageAssistantController {
       onNewChat: () => this.newChat(),
       onSelectChat: (id) => this.switchChat(id),
       onExportChat: () => this.exportCurrentChat(),
+      onDeleteChat: (id) => this.deleteChat(id),
+      onArchiveChat: (id) => this.archiveChat(id),
     }, {
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
       theme: assistantSettings.theme,
       sidebarOpen: assistantSettings.sidebarOpen,
+      imagesEnabled: cfg.imagesEnabled,
     });
 
     if (this.activeChatId && this.history.length) {
-      this.ui.loadMessages(this.history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system"));
+      this.ui.loadMessages(this.displayHistory());
       this.ui.setActiveChat(this.activeChatId);
+      this.greetedChatId = this.activeChatId; // don't greet over a restored conversation
     }
 
     this.ui.setTtsEnabled(this.ttsEnabled);
@@ -232,6 +251,16 @@ class PageAssistantController {
     window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, this.onAssistantSettingsChange);
   }
 
+  /** Full teardown for SPA/React strict-mode remounts: listeners, timers, voice, DOM. */
+  destroy() {
+    this.dispose();
+    this.voice?.stop();
+    this.voice = undefined;
+    this.pending = undefined;
+    this.ui.destroy();
+    removeDiscoveryHint();
+  }
+
   updateConfig(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
     if (patch.autoSpeak !== undefined) {
       this.ttsEnabled = patch.autoSpeak;
@@ -255,10 +284,63 @@ class PageAssistantController {
     const session = this.chatStore.create({ model });
     this.activeChatId = session.id;
     this.history = [];
-    this.pending = undefined;
+    this.clearPending();
     this.ui.clearLog();
     this.ui.setActiveChat(session.id);
+    this.showGreeting();
     trackEvent("chat_new", { id: session.id }, this.analyticsUrl());
+  }
+
+  /** Show greeting + suggestions once per empty chat (also fires on New chat). */
+  private showGreeting() {
+    if (this.history.length) return;
+    if (this.greetedChatId === this.activeChatId) return;
+    this.greetedChatId = this.activeChatId;
+    if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
+    if (this.cfg.suggestions?.length) {
+      this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+    }
+  }
+
+  private clearPending() {
+    this.pending = undefined;
+    this.ui.removeConfirm();
+    this.ui.clearHighlight();
+  }
+
+  private deleteChat(id: string) {
+    const wasActive = id === this.activeChatId;
+    this.chatStore.delete(id);
+    if (wasActive) {
+      // The active conversation is gone — adopt whatever the store made active, or
+      // start fresh, so persistCurrentChat resumes saving instead of no-op'ing forever.
+      const next = this.chatStore.getActive();
+      if (next) {
+        this.activeChatId = next.id;
+        this.history = [...next.messages];
+        this.clearPending();
+        this.ui.clearLog();
+        this.ui.loadMessages(this.history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system"));
+        this.ui.setActiveChat(next.id);
+      } else {
+        this.newChat();
+      }
+    }
+  }
+
+  private archiveChat(id: string) {
+    const session = this.chatStore.get(id);
+    const willArchive = !session?.archived;
+    this.chatStore.archive(id, willArchive);
+    if (willArchive && id === this.activeChatId) {
+      // Archiving the active chat detaches it from `activeId`; re-anchor so saves resume.
+      const next = this.chatStore.getActive();
+      if (next && next.id !== id) {
+        this.switchChat(next.id);
+      } else {
+        this.newChat();
+      }
+    }
   }
 
   private switchChat(id: string) {
@@ -268,9 +350,9 @@ class PageAssistantController {
     this.activeChatId = id;
     this.chatStore.setActive(id);
     this.history = [...session.messages];
-    this.pending = undefined;
+    this.clearPending();
     this.ui.clearLog();
-    this.ui.loadMessages(this.history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system"));
+    this.ui.loadMessages(this.displayHistory());
     this.ui.setActiveChat(id);
     trackEvent("chat_switch", { id }, this.analyticsUrl());
   }
@@ -279,6 +361,13 @@ class PageAssistantController {
     if (!this.activeChatId || this.cfg.disableChatHistory) return;
     const model = getAssistantSettings(this.assistantSettingsKey).model;
     this.chatStore.saveMessages(this.activeChatId, this.history, { model });
+  }
+
+  /** History mapped for display: collapse the raw attachment dump back to a "📎 name" line. */
+  private displayHistory() {
+    return this.history
+      .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
+      .map((m) => (m.role === "user" ? { ...m, content: stripAttachmentDump(m.content) } : m));
   }
 
   private exportCurrentChat() {
@@ -309,10 +398,7 @@ class PageAssistantController {
     if (this.scanned) return;
     this.scanned = true;
     trackEvent("widget_open", {}, this.analyticsUrl());
-    if (this.cfg.greeting && !this.history.length) this.ui.addMessage("assistant", this.cfg.greeting);
-    if (this.cfg.suggestions?.length && !this.history.length) {
-      this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
-    }
+    this.showGreeting();
     if (this.cfg.knowledgeUrl) {
       try {
         const url = new URL(this.cfg.knowledgeUrl, location.href);
@@ -351,13 +437,16 @@ class PageAssistantController {
 
   private async handleUser(text: string, attachments?: FileAttachment[]) {
     if (this.pending) {
-      this.pending = undefined;
+      // A new message supersedes a stale pending confirmation — clear its live buttons.
+      this.clearPending();
       this.ui.addMessage("system", "Previous pending action cancelled.");
     }
     const message = formatAttachmentsForPrompt(text, attachments ?? []);
     if (!message.trim()) return;
+    this.lastTurn = { text, attachments };
     this.ui.addMessage("user", text + (attachments?.length ? `\n📎 ${attachments.map((a) => a.name).join(", ")}` : ""));
     this.ui.setState("thinking");
+    this.ui.setBusy(true);
     try {
       const res = await this.assistant.chat({ message, page: this.pageContext(), history: this.history });
       this.history.push({ role: "user", content: message }, { role: "assistant", content: res.message });
@@ -365,35 +454,98 @@ class PageAssistantController {
 
       if (res.pendingConfirmation) {
         this.pending = { name: res.pendingConfirmation.name, args: res.pendingConfirmation.args };
-        this.ui.addConfirm(res.message);
+        // Show the action + args ("show me before you do it") and highlight the target control.
+        const previewText = res.pendingConfirmation.preview || res.message;
+        this.showActionPreview(res.pendingConfirmation.name, res.pendingConfirmation.args);
+        this.ui.addConfirm(previewText);
         this.ui.setState("idle");
+        this.ui.setBusy(false);
         return;
       }
+      this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
       trackEvent("message_sent", { len: message.length }, this.analyticsUrl());
     } catch (e) {
-      this.ui.addMessage("system", `Error: ${e instanceof Error ? e.message : e}`);
+      this.ui.setBusy(false);
       this.ui.setState("idle");
+      this.showFriendlyError(e, () => this.retryLastTurn());
     }
   }
 
+  private retryLastTurn() {
+    if (!this.lastTurn) return;
+    const { text, attachments } = this.lastTurn;
+    this.handleUser(text, attachments);
+  }
+
+  /** Map any error to a plain-English message + retry affordance. */
+  private showFriendlyError(e: unknown, onRetry: () => void) {
+    let msg = "Something went wrong, please try again.";
+    if (e instanceof ProxyError) {
+      switch (true) {
+        case e.status === 0:
+          msg = "Can't reach the assistant — check your connection and try again.";
+          break;
+        case e.status === 401 || e.status === 403:
+          msg = "The assistant isn't configured correctly.";
+          break;
+        case e.status === 429:
+          msg = "The assistant is busy — try again in a moment.";
+          break;
+        case e.status >= 500:
+          msg = "The assistant had a problem — try again.";
+          break;
+      }
+    } else if (e instanceof TypeError) {
+      msg = "Can't reach the assistant — check your connection and try again.";
+    }
+    this.ui.addError(msg, onRetry);
+  }
+
+  /** Highlight the on-page control a confirm-gated action will operate. Defensive. */
+  private showActionPreview(name: string, args: Record<string, unknown>) {
+    this.ui.clearHighlight();
+    const selector = this.resolveActionSelector(name, args);
+    if (selector) this.ui.highlightElement(selector);
+  }
+
+  /** Resolve a scanner selector for the control an action targets (undefined if none). */
+  private resolveActionSelector(name: string, args: Record<string, unknown>): string | undefined {
+    if (typeof (args as any).selector === "string") return (args as any).selector;
+    // open_page_link targets a control by its visible label — reuse the scan map's selector.
+    const label = typeof (args as any).label === "string" ? (args as any).label.trim().toLowerCase() : undefined;
+    if (label && this.map) {
+      const hit = this.map.controls.find((c) => c.label.trim().toLowerCase() === label);
+      if (hit) return hit.selector;
+    }
+    return undefined;
+  }
+
   private async handleConfirm(approved: boolean) {
+    this.ui.clearHighlight();
     if (!approved || !this.pending) {
       this.pending = undefined;
       this.ui.addMessage("system", "Cancelled.");
       return;
     }
+    const pending = this.pending;
     this.ui.setState("thinking");
+    this.ui.setBusy(true);
     try {
-      const res = await this.assistant.confirmAndRun(this.pending.name, this.pending.args, this.pageContext());
+      const res = await this.assistant.confirmAndRun(pending.name, pending.args, this.pageContext());
       this.history.push({ role: "assistant", content: res.message });
       this.persistCurrentChat();
+      this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
     } catch (e) {
-      this.ui.addMessage("system", `Error: ${e instanceof Error ? e.message : e}`);
+      this.ui.setBusy(false);
       this.ui.setState("idle");
+      this.showFriendlyError(e, () => {
+        this.pending = pending;
+        this.handleConfirm(true);
+      });
     } finally {
       this.pending = undefined;
     }
@@ -418,18 +570,36 @@ class PageAssistantController {
       this.ui.addMessage("system", "Voice is off for this app.");
       return;
     }
-    if (this.listening) return;
+    // Second tap cancels an in-flight listen instead of being a no-op (was stuck up to 12s).
+    if (this.listening) {
+      this.voice.cancelListen();
+      return;
+    }
     this.listening = true;
     this.ui.setMic(true);
     this.ui.setState("listening");
     let text = "";
     try {
-      text = await this.voice.listenOnce();
-    } catch {
-      this.ui.addMessage("system", "I couldn't access the microphone.");
+      text = await this.voice.listenOnce({
+        onCaptureStart: () => this.ui.setMicCountdown(4),
+        onCountdown: (msRemaining) => this.ui.setMicCountdown(msRemaining / 1000),
+      });
+    } catch (e) {
+      if (e instanceof VoiceError) {
+        const map: Record<string, string> = {
+          "no-speech": "I didn't catch that — tap the mic and try again.",
+          "not-allowed": "Microphone permission denied. Allow mic access in your browser to use voice.",
+          "no-mic": "No microphone was found.",
+          other: "I couldn't access the microphone.",
+        };
+        this.ui.addMessage("system", map[e.reason] ?? map.other);
+      } else {
+        this.ui.addMessage("system", "I couldn't access the microphone.");
+      }
     } finally {
       this.listening = false;
       this.ui.setMic(false);
+      this.ui.setMicCountdown(null);
       this.ui.setState("idle");
     }
     if (text.trim()) this.handleUser(text.trim());
@@ -447,6 +617,11 @@ export const PageAssistant = {
   configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
     instance?.updateConfig(patch);
   },
+  /** Tear down the widget entirely (listeners, timers, shadow host, injected nodes). */
+  destroy() {
+    instance?.destroy();
+    instance = undefined;
+  },
   openVoiceSettings: openVoiceSettingsModal,
   closeVoiceSettings: closeVoiceSettingsModal,
   mountVoiceSettingsPanel,
@@ -455,17 +630,47 @@ export const PageAssistant = {
   mountAssistantSettingsPanel,
 };
 
-function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
+async function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
   if (typeof document === "undefined" || document.querySelector('link[rel="llm"]')) return;
   const base = (serverUrl || "").replace(/\/$/, "");
+  const href = knowledgeUrl || `${base}/llm.txt`;
+  // Only advertise the discovery hint when the resource actually exists — a widget-only
+  // deployment (no server) would otherwise publish a <link>/<meta> pointing at a 404.
+  try {
+    const res = await fetch(href, { method: "HEAD" });
+    if (!res.ok) return;
+  } catch {
+    return; // unreachable → don't advertise
+  }
   const link = document.createElement("link");
   link.rel = "llm";
-  link.href = knowledgeUrl || `${base}/llm.txt`;
+  link.href = href;
+  link.dataset.paDiscovery = "1";
   document.head.appendChild(link);
   const meta = document.createElement("meta");
   meta.name = "llm-actions";
   meta.content = `${base}/.well-known/llm-actions.json`;
+  meta.dataset.paDiscovery = "1";
   document.head.appendChild(meta);
+}
+
+function removeDiscoveryHint() {
+  if (typeof document === "undefined") return;
+  document.querySelectorAll('[data-pa-discovery="1"]').forEach((n) => n.remove());
+}
+
+/** Collapse the raw "--- File: … ---" / image data-URL dump back to a compact "📎 name" line. */
+function stripAttachmentDump(content: string): string {
+  const fileIdx = content.indexOf("\n\n--- File: ");
+  const imgIdx = content.indexOf('\n\n[Attached image');
+  const idx = [fileIdx, imgIdx].filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  if (idx === undefined) return content;
+  const head = content.slice(0, idx);
+  const names: string[] = [];
+  const re = /--- File: (.+?) ---|\[Attached image "(.+?)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content))) names.push(m[1] ?? m[2]);
+  return head + (names.length ? `\n📎 ${names.join(", ")}` : "");
 }
 
 if (typeof window !== "undefined") (window as any).PageAssistant = PageAssistant;

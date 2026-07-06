@@ -9,13 +9,21 @@ import {
   type ThemeMode,
 } from "./assistant-settings.js";
 import { CSS as VOICE_CSS } from "./settings-ui-shared.js";
-import { VOICE_SETTINGS_STORAGE_KEY, getVoiceSettings, setVoiceSettings } from "./settings.js";
 import {
+  VOICE_SETTINGS_CHANGE_EVENT,
+  VOICE_SETTINGS_STORAGE_KEY,
+  getVoiceSettings,
+  setVoiceSettings,
+} from "./settings.js";
+import {
+  BROWSER_ONLY_CAPABILITIES,
   ELEVENLABS_VOICES,
   OPENAI_VOICES,
+  fetchVoiceCapabilities,
   type SttMode,
   type TtsMode,
   type TtsProvider,
+  type VoiceCapabilities,
 } from "./settings.js";
 import type { ChatHistoryStore } from "./chatHistory.js";
 
@@ -47,6 +55,10 @@ export function mountAssistantSettingsPanel(
   const root = el("div", "wrap");
   shadow.appendChild(root);
 
+  // Server voice capabilities: unknown until the fetch resolves. Start browser-only so
+  // nothing is falsely offered before we hear back; a re-render swaps in real values.
+  let caps: VoiceCapabilities = BROWSER_ONLY_CAPABILITIES;
+
   const render = () => {
     root.innerHTML = "";
     const tabs = el("div", "tabs");
@@ -63,16 +75,30 @@ export function mountAssistantSettingsPanel(
 
     const body = el("div", "tab-body");
     if (activeTab === "General") renderGeneral(body, storageKey);
-    else if (activeTab === "Voice") renderVoice(body, voiceKey);
+    else if (activeTab === "Voice") renderVoice(body, voiceKey, caps);
     else renderData(body, opts.chatStore);
     root.appendChild(body);
   };
 
   render();
+
+  // Ask the server what it can actually do; grey out options it can't back.
+  const abort = new AbortController();
+  fetchVoiceCapabilities(opts.serverUrl, abort.signal).then((c) => {
+    caps = c;
+    if (activeTab === "Voice") render();
+  });
+
   const onChange = () => render();
+  // The extended modal previously re-rendered only on ASSISTANT_SETTINGS_CHANGE_EVENT,
+  // but changing the speech engine fires VOICE_SETTINGS_CHANGE_EVENT — so the Provider/
+  // Voice rows never appeared until the modal was reopened. Listen to both.
   window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, onChange);
+  window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, onChange);
   return () => {
+    abort.abort();
     window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, onChange);
+    window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, onChange);
     host.remove();
   };
 }
@@ -86,6 +112,12 @@ function renderGeneral(root: HTMLElement, storageKey: string) {
     sel.onchange = () => setAssistantSettings({ model: sel.value }, storageKey);
     return sel;
   });
+  // The list is static; a model only works if the server's LLM router has a key/route
+  // for its provider. Say so instead of letting a bad pick fail silently at chat time.
+  const modelNote = el("p", "hint");
+  modelNote.style.margin = "-6px 0 12px 152px";
+  modelNote.textContent = "Models depend on the server's configured providers — an unsupported one will error when you send.";
+  root.appendChild(modelNote);
   addRow(root, "Theme", () => {
     const sel = el("select", "field") as HTMLSelectElement;
     sel.innerHTML = `<option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>`;
@@ -113,7 +145,7 @@ function renderGeneral(root: HTMLElement, storageKey: string) {
   });
 }
 
-function renderVoice(root: HTMLElement, voiceKey: string) {
+function renderVoice(root: HTMLElement, voiceKey: string, caps: VoiceCapabilities) {
   const hint = el("p", "hint");
   hint.textContent = "Voice settings apply to read-aloud and microphone input.";
   root.appendChild(hint);
@@ -126,22 +158,34 @@ function renderVoice(root: HTMLElement, voiceKey: string) {
   speakLabel.append(speakCb, el("span", undefined, "Read replies aloud"));
   addRow(root, "Read aloud", () => speakLabel);
 
+  const vs = getVoiceSettings(voiceKey);
+  const serverTts = caps.tts.server;
+  const serverStt = caps.stt.server;
+
   const ttsSel = el("select", "field") as HTMLSelectElement;
-  ttsSel.innerHTML = `<option value="browser">Browser (free)</option><option value="server">Server TTS</option>`;
-  ttsSel.value = getVoiceSettings(voiceKey).ttsMode;
+  ttsSel.innerHTML = `<option value="browser">Browser (free)</option><option value="server"${serverTts ? "" : " disabled"}>Server TTS${serverTts ? "" : " (not configured)"}</option>`;
+  ttsSel.value = vs.ttsMode;
   ttsSel.onchange = () => setVoiceSettings({ ttsMode: ttsSel.value as TtsMode }, voiceKey);
   addRow(root, "Speech engine", () => ttsSel);
 
   const sttSel = el("select", "field") as HTMLSelectElement;
-  sttSel.innerHTML = `<option value="browser">Browser mic</option><option value="server">Server Whisper</option>`;
-  sttSel.value = getVoiceSettings(voiceKey).sttMode;
+  sttSel.innerHTML = `<option value="browser">Browser mic</option><option value="server"${serverStt ? "" : " disabled"}>Server Whisper${serverStt ? "" : " (not configured)"}</option>`;
+  sttSel.value = vs.sttMode;
   sttSel.onchange = () => setVoiceSettings({ sttMode: sttSel.value as SttMode }, voiceKey);
   addRow(root, "Mic input", () => sttSel);
 
-  const vs = getVoiceSettings(voiceKey);
   if (vs.ttsMode === "server") {
     const provSel = el("select", "field") as HTMLSelectElement;
-    provSel.innerHTML = `<option value="elevenlabs">ElevenLabs</option><option value="openai">OpenAI</option>`;
+    const provOpts: Array<[TtsProvider, string]> = [
+      ["elevenlabs", "ElevenLabs"],
+      ["openai", "OpenAI"],
+    ];
+    provSel.innerHTML = provOpts
+      .map(([id, label]) => {
+        const ok = !serverTts || caps.tts.providers.length === 0 || caps.tts.providers.includes(id);
+        return `<option value="${id}"${ok ? "" : " disabled"}>${label}${ok ? "" : " (no server key)"}</option>`;
+      })
+      .join("");
     provSel.value = vs.ttsProvider;
     provSel.onchange = () => setVoiceSettings({ ttsProvider: provSel.value as TtsProvider }, voiceKey);
     addRow(root, "TTS provider", () => provSel);
@@ -158,6 +202,22 @@ function renderVoice(root: HTMLElement, voiceKey: string) {
       }
     };
     addRow(root, "Voice", () => voiceSel);
+  }
+
+  // Explain any greyed-out options + warn if a stored preference can't be honored.
+  const note = el("p", "hint");
+  note.style.marginTop = "12px";
+  if (!serverTts && !serverStt) {
+    note.textContent =
+      "This server has no voice keys configured, so only the free browser voice and mic are available. Server TTS/STT (ElevenLabs · OpenAI · Whisper) are greyed out.";
+    root.appendChild(note);
+  } else if ((vs.ttsMode === "server" && !serverTts) || (vs.sttMode === "server" && !serverStt)) {
+    note.textContent =
+      "A saved option isn't available on this server and will fall back to the browser. Greyed-out choices need a server API key.";
+    root.appendChild(note);
+  } else if (!serverTts || !serverStt) {
+    note.textContent = "Greyed-out server options aren't configured on this server; the browser handles them for free.";
+    root.appendChild(note);
   }
 }
 

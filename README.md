@@ -32,18 +32,33 @@ Capabilities run **in the page**, so results never round-trip through the model 
 
 ## Quick start
 
-### 1. Run the backend (holds your API keys)
+The packages are **not on npm yet** — this repo is the source of truth. Clone and
+build; the widget bundle and all `dist/` output are produced locally (they're
+gitignored).
+
+### 1. Clone, build, run the backend (holds your API keys)
 
 ```bash
-npm install && npm run build
-cp .env.example packages/server/.env   # add an LLM key
+git clone https://github.com/philipposk/page-assistant.git
+cd page-assistant
+npm install && npm run build            # produces every package's dist/ (incl. the widget bundle)
+cp .env.example packages/server/.env    # add an LLM key
 npm run dev:server                      # http://localhost:8787
 ```
 
-### 2. Embed the widget
+### 2. Open the demo page
+
+`examples/demo.html` embeds the freshly-built widget and points it at the local
+server. Open it in a browser (e.g. `open examples/demo.html`, or serve the repo root
+with any static server). It loads the widget from the built path
+`../packages/widget/dist/page-assistant.global.js` — so it only works **after
+`npm run build`**.
+
+### 3. Embed in your own app
 
 ```html
-<script src="https://unpkg.com/@page-assistant/widget/dist/page-assistant.global.js"></script>
+<!-- Local build (works today): copy the built bundle, or reference its dist path -->
+<script src="/path/to/page-assistant/packages/widget/dist/page-assistant.global.js"></script>
 <script>
   PageAssistant.init({
     serverUrl: "http://localhost:8787",
@@ -64,7 +79,23 @@ npm run dev:server                      # http://localhost:8787
 </script>
 ```
 
-In a bundler (React/Next/Vue): `import { PageAssistant, capability } from "@page-assistant/widget"`.
+In a bundler (React/Next/Vue): `import { PageAssistant, capability } from "@page-assistant/widget"`
+(point the dependency at `file:...` until published).
+
+### After publish (once on npm)
+
+Once the packages are published, the same widget is available from a CDN and npm —
+until then these will 404:
+
+```html
+<!-- available AFTER publish -->
+<script src="https://unpkg.com/@page-assistant/widget/dist/page-assistant.global.js"></script>
+```
+
+```bash
+# available AFTER publish
+npm install @page-assistant/widget @page-assistant/server @page-assistant/core
+```
 
 ## Reading any page (first-visit scan)
 
@@ -72,11 +103,34 @@ On first open the widget runs a same-origin scan (`fullScan()`): headings, nav l
 
 ## llm.txt — let other agents use your app
 
-If you give the server your capabilities + metadata, it serves:
+If you give the **server** your capabilities + metadata, it serves:
 
 - `GET /llm.txt` — human/agent-readable description of the app and every action.
 - `GET /.well-known/llm-actions.json` — machine manifest.
 - `POST /v1/agent` — the **agent-to-agent endpoint**: another AI agent sends `{ message, page }` and drives your assistant, getting back the same grounded, validated results a human would.
+
+These endpoints **only mount when you pass `capabilities` (and `llmTxt`) to
+`createServer`**. The default proxy (`npm run dev:server`, or `page-assistant serve`
+with no config) does not include them, so an out-of-the-box server returns 404 for
+`/v1/agent` — that's why the CLI `chat` command and the MCP `ask_page_assistant` tool
+need a capability-backed server. See [`examples/full-server.mjs`](./examples/full-server.mjs)
+for a runnable one.
+
+### Two capability lists — they do NOT carry over
+
+There are **two separate places** you register capabilities, one per path:
+
+| Path | Where capabilities live | Runs where |
+|------|-------------------------|------------|
+| On-page assistant | `PageAssistant.init({ capabilities })` (widget) | the **browser** |
+| Agent-to-agent (`/v1/agent`, `llm.txt`) | `createServer({ capabilities })` (server) | your **server** |
+
+The browser list and the server list are independent. Capabilities you pass to
+`PageAssistant.init` are **not** visible to `/v1/agent` or `llm.txt`, and vice versa.
+If you want both the on-page assistant and the external agent endpoint, register the
+relevant actions in **both** places. (Server capabilities usually call your backend
+directly; widget capabilities call your real in-page functions with the user's
+session.)
 
 ## Voice
 
@@ -92,12 +146,32 @@ If you give the server your capabilities + metadata, it serves:
 | `@page-assistant/core` | Grounding brain: capability registry, tool loop, validator, `llm.txt` generator. Runs in browser or Node. |
 | `@page-assistant/widget` | The embeddable browser widget (UI, scanner, voice). |
 | `@page-assistant/server` | Node backend: LLM proxy, voice, agent endpoint, `llm.txt` hosting. |
+| `@page-assistant/cli` | Command line: `health`, `models`, `chat` (→ `/v1/agent`), `serve` a proxy (with optional `--config` for capabilities). |
+| `@page-assistant/mcp` | MCP stdio server exposing the assistant to Cursor / Claude Desktop as `ask_page_assistant`. |
+
+A dependency-free Python REST client also lives in `packages/python` (not yet on PyPI).
 
 ## Tests
 
 ```bash
 npm test     # proves the anti-hallucination guarantees
 ```
+
+## Publishing (maintainers)
+
+Packages publish automatically from `.github/workflows/release.yml` when you push a
+version tag:
+
+```bash
+# bump every package to the new version first (root + all 5 packages + internal pins),
+# commit, then:
+git tag v0.4.0 && git push --tags
+```
+
+The workflow builds, typechecks, tests, and `npm publish`es core → widget → server →
+cli → mcp. It requires a repo secret **`NPM_TOKEN`** (an npm automation token with
+publish rights to the `@page-assistant` scope). Versions that already exist on npm will
+fail the publish, so always bump before tagging.
 
 ## License
 

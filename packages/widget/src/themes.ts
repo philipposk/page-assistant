@@ -20,7 +20,7 @@ export const THEME_VARS: Record<Exclude<ThemeMode, "system">, Record<string, str
     "--pa-bg-head": "#f4f7f5",
     "--pa-bg-sidebar": "#f0f4f2",
     "--pa-bg-input": "#ffffff",
-    "--pa-bg-msg-user": "#059669",
+    "--pa-bg-msg-user": "#047857",
     "--pa-bg-msg-asst": "#f0fdf4",
     "--pa-text": "#0f172a",
     "--pa-text-muted": "#64748b",
