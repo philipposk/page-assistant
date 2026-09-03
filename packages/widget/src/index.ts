@@ -24,6 +24,15 @@ export interface PageAssistantConfig {
   /** Backend base URL (the @page-assistant/server deployment). */
   serverUrl: string;
   appName?: string;
+  /**
+   * The mark on the launcher button. One of the names in LAUNCHER_ICONS —
+   * "chat" (default), "sparkle", "mic", "book", "help", "phone" — or your own
+   * SVG string, or a single character such as an emoji.
+   *
+   * It used to be a telephone with no way to change it, which reads as "call
+   * support" rather than "ask something and get an answer now".
+   */
+  launcherIcon?: string;
   persona?: string;
   /** Real host actions the assistant may perform. The grounding boundary. */
   capabilities: Capability[];
@@ -149,7 +158,7 @@ class PageAssistantController {
       onTtsToggle: (on) => {
         this.ttsEnabled = on;
       },
-    });
+    }, cfg.launcherIcon);
     this.ui.setTtsEnabled(this.ttsEnabled);
     this.onSettingsChange = () => {
       if (cfg.useVoiceSettings === false || cfg.voice === false) return;
