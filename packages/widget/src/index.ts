@@ -36,6 +36,15 @@ import { trackEvent } from "./analytics.js";
 export interface PageAssistantConfig {
   serverUrl: string;
   appName?: string;
+  /**
+   * The mark on the launcher button. One of the names in LAUNCHER_ICONS —
+   * "chat" (default), "sparkle", "mic", "book", "help", "phone" — or your own
+   * SVG string, or a single character such as an emoji.
+   *
+   * It used to be a telephone with no way to change it, which reads as "call
+   * support" rather than "ask something and get an answer now".
+   */
+  launcherIcon?: string;
   persona?: string;
   capabilities: Capability[];
   getPageState?: () => Record<string, unknown>;
@@ -128,6 +137,8 @@ class PageAssistantController {
   private onAssistantSettingsChange: () => void;
   private lastTurn?: { text: string; attachments?: FileAttachment[] };
   private greetedChatId: string | null = null;
+  private notedSttFallback = false;
+  private destroyed = false;
 
   constructor(private cfg: PageAssistantConfig) {
     this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
@@ -193,6 +204,7 @@ class PageAssistantController {
       title: cfg.appName ? `${cfg.appName} assistant` : "Page assistant",
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
       serverUrl: cfg.serverUrl,
+      authToken: cfg.authToken,
     };
 
     this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
@@ -214,6 +226,7 @@ class PageAssistantController {
       onDeleteChat: (id) => this.deleteChat(id),
       onArchiveChat: (id) => this.archiveChat(id),
     }, {
+      launcherIcon: cfg.launcherIcon,
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
       theme: assistantSettings.theme,
       sidebarOpen: assistantSettings.sidebarOpen,
@@ -243,7 +256,9 @@ class PageAssistantController {
     };
     window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
     window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, this.onAssistantSettingsChange);
-    injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl);
+    // Guard the async HEAD probe: if the widget is destroyed before it resolves, don't
+    // append <link>/<meta> to a torn-down page.
+    injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl, () => !this.destroyed);
   }
 
   dispose() {
@@ -253,10 +268,15 @@ class PageAssistantController {
 
   /** Full teardown for SPA/React strict-mode remounts: listeners, timers, voice, DOM. */
   destroy() {
+    this.destroyed = true;
     this.dispose();
+    this.voice?.cancelListen(); // stop a hot mic (in-flight listen) before dropping the ref
     this.voice?.stop();
     this.voice = undefined;
     this.pending = undefined;
+    // Close any settings modal we may have opened so its shadow host + listeners don't leak.
+    closeAssistantSettingsModal();
+    closeVoiceSettingsModal();
     this.ui.destroy();
     removeDiscoveryHint();
   }
@@ -288,7 +308,7 @@ class PageAssistantController {
     this.ui.clearLog();
     this.ui.setActiveChat(session.id);
     this.showGreeting();
-    trackEvent("chat_new", { id: session.id }, this.analyticsUrl());
+    this.track("chat_new", { id: session.id });
   }
 
   /** Show greeting + suggestions once per empty chat (also fires on New chat). */
@@ -320,7 +340,9 @@ class PageAssistantController {
         this.history = [...next.messages];
         this.clearPending();
         this.ui.clearLog();
-        this.ui.loadMessages(this.history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system"));
+        // Use displayHistory() so restored user turns show the collapsed "📎 name" line
+        // instead of the raw "--- File: … ---" attachment dump.
+        this.ui.loadMessages(this.displayHistory());
         this.ui.setActiveChat(next.id);
       } else {
         this.newChat();
@@ -354,7 +376,7 @@ class PageAssistantController {
     this.ui.clearLog();
     this.ui.loadMessages(this.displayHistory());
     this.ui.setActiveChat(id);
-    trackEvent("chat_switch", { id }, this.analyticsUrl());
+    this.track("chat_switch", { id });
   }
 
   private persistCurrentChat() {
@@ -381,12 +403,17 @@ class PageAssistantController {
     a.download = "chat-export.json";
     a.click();
     URL.revokeObjectURL(url);
-    trackEvent("chat_export", { id: this.activeChatId }, this.analyticsUrl());
+    this.track("chat_export", { id: this.activeChatId });
   }
 
   private analyticsUrl() {
     const s = getAssistantSettings(this.assistantSettingsKey);
     return s.analyticsEnabled ? this.cfg.serverUrl : undefined;
+  }
+
+  private track(type: string, meta?: Record<string, unknown>) {
+    // Forward the bearer token so analytics survive on servers that guard /v1/analytics.
+    trackEvent(type, meta, this.analyticsUrl(), this.cfg.authToken);
   }
 
   private async handleToggle(open: boolean) {
@@ -397,7 +424,7 @@ class PageAssistantController {
     }
     if (this.scanned) return;
     this.scanned = true;
-    trackEvent("widget_open", {}, this.analyticsUrl());
+    this.track("widget_open", {});
     this.showGreeting();
     if (this.cfg.knowledgeUrl) {
       try {
@@ -454,8 +481,14 @@ class PageAssistantController {
 
       if (res.pendingConfirmation) {
         this.pending = { name: res.pendingConfirmation.name, args: res.pendingConfirmation.args };
-        // Show the action + args ("show me before you do it") and highlight the target control.
-        const previewText = res.pendingConfirmation.preview || res.message;
+        // Prefer the readable assistant message; the visual highlight ring is the real
+        // "show me before you do it" arg disclosure. Only fall back to a HUMAN-READABLE
+        // arg summary (e.g. "Pricing"), never the raw `open_page_link({"label":"Pricing"})`.
+        const previewText =
+          res.message ||
+          readableArgs(res.pendingConfirmation.args) ||
+          res.pendingConfirmation.preview ||
+          res.pendingConfirmation.name;
         this.showActionPreview(res.pendingConfirmation.name, res.pendingConfirmation.args);
         this.ui.addConfirm(previewText);
         this.ui.setState("idle");
@@ -465,7 +498,7 @@ class PageAssistantController {
       this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
-      trackEvent("message_sent", { len: message.length }, this.analyticsUrl());
+      this.track("message_sent", { len: message.length });
     } catch (e) {
       this.ui.setBusy(false);
       this.ui.setState("idle");
@@ -583,6 +616,11 @@ class PageAssistantController {
       text = await this.voice.listenOnce({
         onCaptureStart: () => this.ui.setMicCountdown(4),
         onCountdown: (msRemaining) => this.ui.setMicCountdown(msRemaining / 1000),
+        onServerFallback: () => {
+          if (this.notedSttFallback) return;
+          this.notedSttFallback = true;
+          this.ui.addMessage("system", "Server voice isn't available here — using your browser's microphone instead.");
+        },
       });
     } catch (e) {
       if (e instanceof VoiceError) {
@@ -630,7 +668,7 @@ export const PageAssistant = {
   mountAssistantSettingsPanel,
 };
 
-async function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
+async function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string, isAlive: () => boolean = () => true) {
   if (typeof document === "undefined" || document.querySelector('link[rel="llm"]')) return;
   const base = (serverUrl || "").replace(/\/$/, "");
   const href = knowledgeUrl || `${base}/llm.txt`;
@@ -642,6 +680,8 @@ async function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
   } catch {
     return; // unreachable → don't advertise
   }
+  // The HEAD round-trip is async — bail if the widget was destroyed while it was in flight.
+  if (!isAlive()) return;
   const link = document.createElement("link");
   link.rel = "llm";
   link.href = href;
@@ -657,6 +697,17 @@ async function injectDiscoveryHint(serverUrl: string, knowledgeUrl?: string) {
 function removeDiscoveryHint() {
   if (typeof document === "undefined") return;
   document.querySelectorAll('[data-pa-discovery="1"]').forEach((n) => n.remove());
+}
+
+/** Turn action args into a readable one-liner (e.g. "Pricing") — never raw JSON. */
+function readableArgs(args: Record<string, unknown>): string {
+  const preferred = ["label", "name", "title", "text", "query", "value"];
+  for (const k of preferred) {
+    const v = args[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  const first = Object.values(args).find((v) => typeof v === "string" && (v as string).trim());
+  return typeof first === "string" ? first.trim() : "";
 }
 
 /** Collapse the raw "--- File: … ---" / image data-URL dump back to a compact "📎 name" line. */

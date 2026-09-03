@@ -25,6 +25,8 @@ export interface UIHandlers {
 }
 
 export interface UIOptions {
+  /** The mark on the launcher button: a name from LAUNCHER_ICONS, raw SVG, or a character. */
+  launcherIcon?: string;
   chatStore?: ChatHistoryStore;
   theme?: ThemeMode;
   sidebarOpen?: boolean;
@@ -44,6 +46,7 @@ const CSS = `
   display:flex; align-items:center; justify-content:center; color:#042f2e;
 }
 .launcher svg { width: 28px; height: 28px; fill: currentColor; }
+.launcher .glyph { font-size: 24px; line-height: 1; }
 .launcher:hover { transform: scale(1.08); }
 .launcher.talking { animation: bob .5s infinite alternate; }
 .launcher.thinking { animation: spin 1.2s linear infinite; }
@@ -58,6 +61,7 @@ const CSS = `
 }
 .panel-wrap.open { display: flex; }
 .panel {
+  position: relative;
   width: 580px; max-width: calc(100vw - 32px);
   height: 520px; max-height: calc(100vh - 130px); background: var(--pa-bg); color: var(--pa-text);
   border: 1px solid var(--pa-border); border-radius: 16px;
@@ -120,6 +124,10 @@ const CSS = `
 .pa-highlight { position:fixed; z-index:2147483644; border:3px solid var(--pa-accent); border-radius:8px; box-shadow:0 0 0 3px rgba(22,163,74,.35), 0 0 20px rgba(22,163,74,.5); pointer-events:none; transition:all .2s ease; }
 .pa-highlight::after { content:"👉"; position:absolute; left:-26px; top:50%; transform:translateY(-50%); font-size:18px; }
 .kbd-hint { position:absolute; bottom:4px; left:50%; transform:translateX(-50%); font-size:10px; color:var(--pa-text-muted); opacity:.6; }
+/* Scrim behind the overlay sidebar on phones — tap it to dismiss the sidebar. */
+.sidebar-scrim { position: absolute; inset: 0; z-index: 4; background: rgba(0,0,0,.4); display: none; }
+.sidebar-scrim.show { display: block; }
+@media (min-width: 521px) { .sidebar-scrim { display: none !important; } }
 @media (max-width: 520px) {
   .panel { width: calc(100vw - 16px); height: calc(100dvh - 110px); max-height: calc(100dvh - 110px); }
   .panel-wrap { right: 8px; left: 8px; bottom: calc(84px + env(safe-area-inset-bottom)); }
@@ -151,10 +159,12 @@ export class WidgetUI {
   private micCountdown!: HTMLSpanElement;
   private ttsBtn!: HTMLButtonElement;
   private sendBtn!: HTMLButtonElement;
+  private attachBtn!: HTMLButtonElement;
   private scanline!: HTMLDivElement;
   private toastEl!: HTMLDivElement;
   private sidebar?: ChatSidebar;
   private sidebarEl?: HTMLDivElement;
+  private sidebarScrim?: HTMLDivElement;
   private attachPreview!: HTMLDivElement;
   private fileInput!: HTMLInputElement;
   private pendingAttachments: FileAttachment[] = [];
@@ -164,6 +174,8 @@ export class WidgetUI {
   private typingEl?: HTMLDivElement;
   private confirmRow?: HTMLDivElement;
   private highlightEl?: HTMLDivElement;
+  private highlightTarget?: Element;
+  private highlightReanchor?: () => void;
   private busy = false;
   private lastFocused?: HTMLElement;
   private keydownHandler?: (e: KeyboardEvent) => void;
@@ -174,7 +186,10 @@ export class WidgetUI {
     private handlers: UIHandlers,
     private opts: UIOptions = {}
   ) {
-    this.sidebarOpen = opts.sidebarOpen ?? true;
+    // On phones the sidebar overlays the chat, so defaulting it open hides the conversation
+    // behind it on first open. Default it CLOSED at ≤520px regardless of the stored setting.
+    const isNarrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
+    this.sidebarOpen = isNarrow ? false : opts.sidebarOpen ?? true;
     this.theme = opts.theme ?? "dark";
     this.host = document.createElement("div");
     this.host.id = "page-assistant-root";
@@ -198,7 +213,7 @@ export class WidgetUI {
     this.scanline = el("div", "scanline");
     this.toastEl = el("div", "toast") as HTMLDivElement;
     this.launcher = el("button", "launcher") as HTMLButtonElement;
-    this.launcher.innerHTML = PHONE_SVG;
+    this.launcher.innerHTML = resolveLauncherIcon(this.opts.launcherIcon);
     this.launcher.title = this.title;
     this.launcher.setAttribute("aria-label", `Open ${this.title}`);
     this.launcher.setAttribute("aria-expanded", "false");
@@ -206,7 +221,8 @@ export class WidgetUI {
     this.panelWrap = el("div", "panel-wrap") as HTMLDivElement;
     this.panel = el("div", "panel") as HTMLDivElement;
     this.panel.setAttribute("role", "dialog");
-    this.panel.setAttribute("aria-modal", "true");
+    // NOT aria-modal: this is a non-modal floating panel — the host page stays interactive,
+    // so marking it modal would make screen readers treat the whole page as inert.
     this.panel.setAttribute("aria-label", this.title);
 
     if (this.opts.chatStore) {
@@ -241,6 +257,12 @@ export class WidgetUI {
       this.sidebarEl = this.sidebar.render();
       if (!this.sidebarOpen) this.sidebar.setCollapsed(true);
       this.panel.appendChild(this.sidebarEl);
+      // Scrim behind the overlay sidebar on phones: tapping outside the sidebar closes it.
+      const scrim = el("div", "sidebar-scrim") as HTMLDivElement;
+      scrim.onclick = () => this.setSidebarOpen(false);
+      if (this.sidebarOpen) scrim.classList.add("show");
+      this.sidebarScrim = scrim;
+      this.panel.appendChild(scrim);
     }
 
     const body = el("div", "panel-body");
@@ -296,6 +318,7 @@ export class WidgetUI {
     attachBtn.title = "Attach file";
     attachBtn.setAttribute("aria-label", "Attach a file");
     attachBtn.onclick = () => this.fileInput.click();
+    this.attachBtn = attachBtn;
     this.input = el("input") as HTMLInputElement;
     this.input.type = "text";
     this.input.placeholder = "Ask or tell me to do something…";
@@ -354,6 +377,14 @@ export class WidgetUI {
         this.setSidebarOpen(!this.sidebarOpen);
       }
       if (e.key === "Escape") {
+        // If a chat context menu is open, Escape dismisses the MENU first, not the panel.
+        if (this.sidebar?.closeContextMenuIfOpen()) {
+          e.preventDefault();
+          return;
+        }
+        // Scope Escape to the widget like the other shortcuts — a non-modal floating panel
+        // must not swallow Escape from the host page (forms, other dialogs, etc.).
+        if (!inside) return;
         e.preventDefault();
         this.toggle(false);
       }
@@ -433,6 +464,7 @@ export class WidgetUI {
   setSidebarOpen(open: boolean) {
     this.sidebarOpen = open;
     this.sidebar?.setCollapsed(!open);
+    this.sidebarScrim?.classList.toggle("show", open);
   }
 
   setTheme(theme: ThemeMode) {
@@ -461,11 +493,16 @@ export class WidgetUI {
     this.handlers.onSend(t, attachments.length ? attachments : undefined);
   }
 
-  /** Lock/unlock the input + send while a request is in flight. */
+  /** Lock/unlock all input affordances while a request is in flight. */
   setBusy(busy: boolean) {
     this.busy = busy;
     this.input.disabled = busy;
     this.sendBtn.disabled = busy;
+    // Also lock mic + attach + suggestion chips: tapping the mic mid-request started a
+    // concurrent handleUser that raced the history.
+    this.micBtn.disabled = busy;
+    this.attachBtn.disabled = busy;
+    this.log.querySelectorAll<HTMLButtonElement>(".chip").forEach((c) => (c.disabled = busy));
     if (busy) this.showTyping();
     else this.hideTyping();
   }
@@ -493,6 +530,8 @@ export class WidgetUI {
       this.lastFocused = (document.activeElement as HTMLElement) ?? undefined;
       this.input.focus();
     } else {
+      // Closing must not leave a green action-preview ring floating on the host page.
+      this.clearHighlight();
       // Return focus to whatever launched the dialog (falls back to the launcher).
       (this.lastFocused ?? this.launcher).focus();
     }
@@ -533,11 +572,16 @@ export class WidgetUI {
 
   loadMessages(messages: Array<{ role: string; content: string }>) {
     this.clearLog();
+    // Bulk-restoring a chat would otherwise dump the ENTIRE conversation into the polite
+    // live region, so a screen reader re-reads the whole history on every switch. Suspend
+    // announcements for the bulk insert, then restore live so new replies still announce.
+    this.log.setAttribute("aria-live", "off");
     for (const m of messages) {
       if (m.role === "user" || m.role === "assistant" || m.role === "system") {
         this.addMessage(m.role, m.content);
       }
     }
+    this.log.setAttribute("aria-live", "polite");
   }
 
   addMessage(role: "user" | "assistant" | "system", text: string) {
@@ -548,10 +592,12 @@ export class WidgetUI {
     return m;
   }
 
-  /** Error bubble with readable styling, an assertive announcement, and optional retry. */
+  /** Error bubble with readable styling and optional retry. */
   addError(text: string, onRetry?: () => void) {
     const m = el("div", "msg error") as HTMLDivElement;
-    m.setAttribute("role", "alert");
+    // No role="alert" here: this bubble lives INSIDE the polite role="log" live region, so
+    // an alert would make screen readers announce the error twice. The log announces the
+    // addition once, which is enough.
     const line = el("div");
     line.textContent = text;
     m.appendChild(line);
@@ -617,25 +663,86 @@ export class WidgetUI {
       return false;
     }
     if (!target) return false;
+    const rect0 = target.getBoundingClientRect();
+    if (!rect0.width && !rect0.height) return false;
+
+    const ring = el("div", "pa-highlight") as HTMLDivElement;
+    this.root.appendChild(ring);
+    this.highlightEl = ring;
+    this.highlightTarget = target;
+
+    // Position the ring from the target's CURRENT rect. Called after the scroll settles and
+    // on every scroll/resize so the ring tracks the element instead of being frozen at the
+    // pre-scroll coordinates (the off-screen case is exactly the one that broke before).
+    const place = () => {
+      if (!this.highlightEl || !this.highlightTarget) return;
+      const r = this.highlightTarget.getBoundingClientRect();
+      if (!r.width && !r.height) return;
+      const pad = 4;
+      this.highlightEl.style.top = `${r.top - pad}px`;
+      this.highlightEl.style.left = `${r.left - pad}px`;
+      this.highlightEl.style.width = `${r.width + pad * 2}px`;
+      this.highlightEl.style.height = `${r.height + pad * 2}px`;
+    };
+    place(); // draw immediately at the pre-scroll position so there's no flash of an unplaced ring
+
+    // Measure AFTER the smooth scroll settles. Prefer the native scrollend event; fall back
+    // to a rAF loop that waits until the target's rect stops moving.
+    let scrollSettled = false;
+    const onScrollEnd = () => {
+      if (scrollSettled) return;
+      scrollSettled = true;
+      window.removeEventListener("scrollend", onScrollEnd);
+      place();
+    };
+    if ("onscrollend" in window) {
+      window.addEventListener("scrollend", onScrollEnd, { once: true });
+    }
+    // rAF-until-stable fallback (also covers browsers without scrollend and the case where
+    // the element was already on-screen so scrollend never fires).
+    let lastTop = rect0.top;
+    let stableFrames = 0;
+    let raf = 0;
+    const settle = () => {
+      if (!this.highlightEl) return;
+      const t = this.highlightTarget!.getBoundingClientRect().top;
+      if (Math.abs(t - lastTop) < 0.5) {
+        if (++stableFrames >= 3) {
+          onScrollEnd();
+          return;
+        }
+      } else {
+        stableFrames = 0;
+      }
+      lastTop = t;
+      place();
+      raf = requestAnimationFrame(settle);
+    };
+
     try {
       target.scrollIntoView({ behavior: "smooth", block: "center" });
     } catch {
       /* ignore */
     }
-    const rect = target.getBoundingClientRect();
-    if (!rect.width && !rect.height) return false;
-    const ring = el("div", "pa-highlight") as HTMLDivElement;
-    const pad = 4;
-    ring.style.top = `${rect.top - pad}px`;
-    ring.style.left = `${rect.left - pad}px`;
-    ring.style.width = `${rect.width + pad * 2}px`;
-    ring.style.height = `${rect.height + pad * 2}px`;
-    this.root.appendChild(ring);
-    this.highlightEl = ring;
+    raf = requestAnimationFrame(settle);
+
+    // Re-anchor while the ring is shown: the page can scroll/resize independently.
+    const reanchor = () => place();
+    window.addEventListener("scroll", reanchor, { passive: true, capture: true });
+    window.addEventListener("resize", reanchor, { passive: true });
+    this.highlightReanchor = () => {
+      if (raf) cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", reanchor, { capture: true });
+      window.removeEventListener("resize", reanchor);
+      window.removeEventListener("scrollend", onScrollEnd);
+    };
     return true;
   }
 
   clearHighlight() {
+    this.highlightReanchor?.();
+    this.highlightReanchor = undefined;
+    this.highlightTarget = undefined;
     this.highlightEl?.remove();
     this.highlightEl = undefined;
   }
@@ -689,4 +796,56 @@ function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 }
 
-const PHONE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/></svg>`;
+/* ----------------------------------------------------------------
+   Launcher marks
+
+   The launcher used to be a telephone, always. That reads as "call
+   support" — a queue and a person — when the thing behind it is an
+   assistant that answers immediately and types. It also cannot be
+   right for every host: a book-keeping app, a shop and a helpdesk
+   want different marks.
+
+   So the mark is a choice. Named ones are here; anything else can be
+   passed as raw SVG or as a character.
+   ---------------------------------------------------------------- */
+
+const svg = (body: string): string =>
+  `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+
+export const LAUNCHER_ICONS: Record<string, string> = {
+  /** A phone. The historical default, kept so nothing changes silently. */
+  phone: svg(
+    `<path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/>`,
+  ),
+  /** A speech bubble. What most people read as "talk to something here". */
+  chat: svg(
+    `<path d="M12 3c-4.97 0-9 3.36-9 7.5 0 2.32 1.27 4.39 3.26 5.76-.14 1.06-.6 2.31-1.5 3.53-.2.28.06.66.39.56 2.2-.66 3.72-1.6 4.6-2.26.72.14 1.47.21 2.25.21 4.97 0 9-3.36 9-7.5S16.97 3 12 3z"/>`,
+  ),
+  /** A four-pointed sparkle: the convention for "this is a model". */
+  sparkle: svg(
+    `<path d="M12 2l1.9 5.7c.2.6.7 1.1 1.3 1.3L21 11l-5.7 1.9c-.6.2-1.1.7-1.3 1.3L12 20l-1.9-5.7c-.2-.6-.7-1.1-1.3-1.3L3 11l5.7-1.9c.6-.2 1.1-.7 1.3-1.3L12 2z"/><path d="M19 3l.7 2 2 .7-2 .7L19 8.5l-.7-2-2-.7 2-.7L19 3z" opacity=".7"/>`,
+  ),
+  /** A microphone, for a host where voice is the point. */
+  mic: svg(
+    `<path d="M12 14a3.5 3.5 0 003.5-3.5V6a3.5 3.5 0 10-7 0v4.5A3.5 3.5 0 0012 14z"/><path d="M18 11a1 1 0 10-2 0 4 4 0 01-8 0 1 1 0 10-2 0 6 6 0 005 5.9V20h-2a1 1 0 100 2h6a1 1 0 100-2h-2v-3.1A6 6 0 0018 11z"/>`,
+  ),
+  /** A ruled page: an assistant that reads a ledger rather than a website. */
+  book: svg(
+    `<path d="M6 3h11a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M8 7h7M8 11h7M8 15h4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none"/>`,
+  ),
+  /** A question mark, for help desks. */
+  help: svg(
+    `<path d="M12 2a10 10 0 100 20 10 10 0 000-20zm.1 15.5a1.2 1.2 0 110-2.4 1.2 1.2 0 010 2.4zm1.7-5.1c-.7.5-.9.8-.9 1.4v.3h-1.8v-.4c0-1.2.5-1.9 1.4-2.5.7-.5.9-.8.9-1.3 0-.6-.5-1-1.3-1-.7 0-1.2.4-1.4 1L9 9.4C9.3 8 10.4 7.1 12.1 7.1c1.8 0 3 1 3 2.5 0 1.1-.5 1.7-1.3 2.3z"/>`,
+  ),
+};
+
+/** Resolve whatever the host asked for into markup for the launcher.
+ *  A name picks one of the above; raw SVG passes through; anything else
+ *  short (an emoji, a letter) is rendered as a character. */
+export function resolveLauncherIcon(icon: string | undefined): string {
+  if (!icon) return LAUNCHER_ICONS.chat;
+  const named = LAUNCHER_ICONS[icon];
+  if (named) return named;
+  if (icon.trim().startsWith("<svg")) return icon;
+  return `<span class="glyph">${escapeHtml(icon)}</span>`;
+}
