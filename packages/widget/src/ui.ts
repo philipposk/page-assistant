@@ -24,6 +24,7 @@ const CSS = `
   display:flex; align-items:center; justify-content:center; color:#042f2e;
 }
 .launcher svg { width: 28px; height: 28px; fill: currentColor; }
+.launcher .glyph { font-size: 24px; line-height: 1; }
 .launcher:hover { transform: scale(1.08); }
 .launcher.talking { animation: bob .5s infinite alternate; }
 .launcher.thinking { animation: spin 1.2s linear infinite; }
@@ -78,7 +79,11 @@ export class WidgetUI {
   private ttsBtn!: HTMLButtonElement;
   private scanline!: HTMLDivElement;
 
-  constructor(private title: string, private handlers: UIHandlers) {
+  constructor(
+    private title: string,
+    private handlers: UIHandlers,
+    private launcherIcon?: string,
+  ) {
     const host = document.createElement("div");
     host.id = "page-assistant-root";
     document.body.appendChild(host);
@@ -93,7 +98,7 @@ export class WidgetUI {
 
     this.scanline = el("div", "scanline");
     this.launcher = el("button", "launcher") as HTMLButtonElement;
-    this.launcher.innerHTML = PHONE_SVG;
+    this.launcher.innerHTML = resolveLauncherIcon(this.launcherIcon);
     this.launcher.title = this.title;
     this.launcher.setAttribute("aria-label", `Open ${this.title}`);
 
@@ -233,4 +238,57 @@ function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 }
 
-const PHONE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/></svg>`;
+/* ----------------------------------------------------------------
+   Launcher marks
+
+   The launcher used to be a telephone, always. That reads as "call
+   support" — a queue and a person — when the thing behind it is an
+   assistant that answers immediately and types. It also cannot be
+   right for every host: a book-keeping app, a shop and a helpdesk
+   want different marks.
+
+   So the mark is a choice. Named ones are here; anything else can be
+   passed as raw SVG or as a character.
+   ---------------------------------------------------------------- */
+
+const svg = (body: string): string =>
+  `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+
+export const LAUNCHER_ICONS: Record<string, string> = {
+  /** A phone. The historical default, kept so nothing changes silently. */
+  phone: svg(
+    `<path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/>`,
+  ),
+  /** A speech bubble. What most people read as "talk to something here". */
+  chat: svg(
+    `<path d="M12 3c-4.97 0-9 3.36-9 7.5 0 2.32 1.27 4.39 3.26 5.76-.14 1.06-.6 2.31-1.5 3.53-.2.28.06.66.39.56 2.2-.66 3.72-1.6 4.6-2.26.72.14 1.47.21 2.25.21 4.97 0 9-3.36 9-7.5S16.97 3 12 3z"/>`,
+  ),
+  /** A four-pointed sparkle: the convention for "this is a model". */
+  sparkle: svg(
+    `<path d="M12 2l1.9 5.7c.2.6.7 1.1 1.3 1.3L21 11l-5.7 1.9c-.6.2-1.1.7-1.3 1.3L12 20l-1.9-5.7c-.2-.6-.7-1.1-1.3-1.3L3 11l5.7-1.9c.6-.2 1.1-.7 1.3-1.3L12 2z"/><path d="M19 3l.7 2 2 .7-2 .7L19 8.5l-.7-2-2-.7 2-.7L19 3z" opacity=".7"/>`,
+  ),
+  /** A microphone, for a host where voice is the point. */
+  mic: svg(
+    `<path d="M12 14a3.5 3.5 0 003.5-3.5V6a3.5 3.5 0 10-7 0v4.5A3.5 3.5 0 0012 14z"/><path d="M18 11a1 1 0 10-2 0 4 4 0 01-8 0 1 1 0 10-2 0 6 6 0 005 5.9V20h-2a1 1 0 100 2h6a1 1 0 100-2h-2v-3.1A6 6 0 0018 11z"/>`,
+  ),
+  /** A ruled page: an assistant that reads a ledger rather than a website. */
+  book: svg(
+    `<path d="M6 3h11a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M8 7h7M8 11h7M8 15h4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none"/>`,
+  ),
+  /** A question mark, for help desks. */
+  help: svg(
+    `<path d="M12 2a10 10 0 100 20 10 10 0 000-20zm.1 15.5a1.2 1.2 0 110-2.4 1.2 1.2 0 010 2.4zm1.7-5.1c-.7.5-.9.8-.9 1.4v.3h-1.8v-.4c0-1.2.5-1.9 1.4-2.5.7-.5.9-.8.9-1.3 0-.6-.5-1-1.3-1-.7 0-1.2.4-1.4 1L9 9.4C9.3 8 10.4 7.1 12.1 7.1c1.8 0 3 1 3 2.5 0 1.1-.5 1.7-1.3 2.3z"/>`,
+  ),
+};
+
+/** Resolve whatever the host asked for into markup for the launcher.
+ *  A name picks one of the above; raw SVG passes through; anything else
+ *  short (an emoji, a letter) is rendered as a character. */
+export function resolveLauncherIcon(icon: string | undefined): string {
+  if (!icon) return LAUNCHER_ICONS.chat;
+  const named = LAUNCHER_ICONS[icon];
+  if (named) return named;
+  if (icon.trim().startsWith("<svg")) return icon;
+  return `<span class="glyph">${escapeHtml(icon)}</span>`;
+}
+
