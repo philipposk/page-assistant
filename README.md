@@ -190,10 +190,39 @@ beats the `browserVoice` name hint across languages, so Greek text is not read b
 English voice), to Whisper STT (`x-audio-lang` / `?lang=`) and to ElevenLabs TTS
 (`language_code`).
 
-**`strings`** overrides the widget chrome — placeholder, buttons, `aria-label`s, toasts and
-the voice error messages. `import { DEFAULT_STRINGS } from "@page-assistant/widget"` for the
-full key set; blank values are ignored rather than blanking a label. Chat-sidebar labels are
-not covered yet.
+**`strings`** overrides every user-facing string the SDK renders — the widget chrome
+(placeholder, buttons, `aria-label`s, toasts, voice errors), the chat sidebar (search,
+"+ New chat", the context menu, the rename prompt and delete confirmation) and both
+settings modals (every label, option, hint and note).
+`import { DEFAULT_STRINGS } from "@page-assistant/widget"` for the full key set. Blank
+values are ignored rather than blanking a label, and a key this version does not know is
+ignored rather than throwing — so a host written against an older SDK keeps English for
+whatever was added since.
+
+## Choosing the model
+
+The settings panel only offers a model picker when there is a real choice to make.
+
+```js
+PageAssistant.init({
+  serverUrl, capabilities,
+  showModelPicker: "auto",  // default: ask the server
+  // showModelPicker: false, modelFixedNote: "Το μοντέλο ορίζεται από τον διακομιστή.",
+});
+```
+
+- `"auto"` (default) calls `GET /v1/models`, which returns `{ models, fixed, reason? }`.
+  `@page-assistant/server` filters `models` to the providers it actually holds keys for and
+  reports `fixed: true` when `PA_FIXED_MODEL` is set or there is at most one model to pick.
+- `false` hides the picker outright — the right answer when your own server pins the model
+  and ignores what the client asks. `modelFixedNote` replaces the explanation shown instead.
+- `true` always shows it.
+
+Set `PA_FIXED_MODEL` on `@page-assistant/server` to pin the model: the router then ignores
+the client's `model` entirely, so a visitor cannot upgrade themselves onto a costlier one.
+
+The stored default is `model: ""` — send no override and let the server use what it is
+configured with. Naming a model the server has no key for is a hard error at send time.
 
 ## Deploying the server
 
@@ -257,7 +286,7 @@ version tag:
 ```bash
 # bump every package to the new version first (root + all 5 packages + internal pins),
 # commit, then:
-git tag v0.5.0 && git push --tags
+git tag v0.5.1 && git push --tags
 ```
 
 The workflow builds, typechecks, tests, and `npm publish`es core → widget → server →

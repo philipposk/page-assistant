@@ -3,14 +3,49 @@ import { anthropicProvider } from "./anthropic.js";
 import { openaiProvider } from "./openai.js";
 import { HttpProviderError } from "./errors.js";
 
-/** Available models for widget settings UI and /v1/models endpoint. */
+/**
+ * Models the widget settings UI and /v1/models may offer, newest and most capable first.
+ * Ids are exact and carry no date suffix (`claude-haiku-4-5`, never
+ * `claude-haiku-4-5-20251001`).
+ */
 export const AVAILABLE_MODELS = [
+  { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic" },
+  { id: "claude-fable-5-1", label: "Claude Fable 5.1", provider: "anthropic" },
   { id: "gpt-4o-mini", label: "GPT-4o Mini", provider: "openai" },
   { id: "gpt-4o", label: "GPT-4o", provider: "openai" },
-  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", provider: "anthropic" },
-  { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4", provider: "anthropic" },
-  { id: "anthropic/claude-3.5-haiku", label: "Claude 3.5 Haiku (OpenRouter)", provider: "openrouter" },
+  { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5 (OpenRouter)", provider: "openrouter" },
 ];
+
+/**
+ * What this deployment will actually honour for `model`, for `GET /v1/models`.
+ *
+ * Two things the old endpoint got wrong: it listed every model regardless of which
+ * provider keys were set, and it gave the widget no way to know that the server ignores
+ * the client's choice — so the settings panel showed a picker that changed nothing.
+ *
+ * Set `PA_FIXED_MODEL` to pin the model server-side: the router then ignores whatever the
+ * client asks for, and the widget hides the picker instead of pretending.
+ */
+export function modelCatalog(env: NodeJS.ProcessEnv = process.env): {
+  models: typeof AVAILABLE_MODELS;
+  fixed: boolean;
+  reason?: string;
+} {
+  if (env.PA_FIXED_MODEL) {
+    return { models: [], fixed: true, reason: "The model is chosen by this site and cannot be changed here." };
+  }
+  const models = AVAILABLE_MODELS.filter((m) => {
+    if (m.provider === "anthropic") return !!env.ANTHROPIC_API_KEY;
+    if (m.provider === "openai") return !!env.OPENAI_API_KEY;
+    if (m.provider === "openrouter") return !!env.OPENROUTER_API_KEY;
+    return false;
+  });
+  // Nothing to choose between is not a choice — treat one (or zero) model as fixed so the
+  // widget explains instead of offering a one-item dropdown.
+  return { models, fixed: models.length <= 1 };
+}
 
 /**
  * Pick an LLM provider from env, with a fallback chain (Anthropic → OpenAI → OpenRouter).
@@ -23,6 +58,13 @@ export function routerFromEnv(env: NodeJS.ProcessEnv = process.env): LLMProvider
   return {
     name: "router",
     async complete(input) {
+      // A pinned deployment ignores the client's model outright — that is the whole point
+      // of PA_FIXED_MODEL, so a visitor cannot upgrade themselves onto a costlier one.
+      if (env.PA_FIXED_MODEL) {
+        const pinned = providerForModel(env.PA_FIXED_MODEL, env);
+        if (!pinned) throw new Error(`PA_FIXED_MODEL "${env.PA_FIXED_MODEL}" has no configured provider (need the matching API key).`);
+        return pinned.complete({ ...input, model: undefined });
+      }
       const model = input.model;
       if (model) {
         const targeted = providerForModel(model, env);

@@ -16,7 +16,7 @@ import {
   type MemoryStore,
   type TicketStore,
 } from "@page-assistant/core";
-import { routerFromEnv, AVAILABLE_MODELS } from "./llm/router.js";
+import { routerFromEnv, modelCatalog } from "./llm/router.js";
 import { HttpProviderError } from "./llm/errors.js";
 import { synthesize, transcribe } from "./voice.js";
 import { rateLimit, bearerAuth } from "./ratelimit.js";
@@ -163,7 +163,9 @@ export function createServer(config: ServerConfig = {}): Express {
   });
 
   app.get("/v1/models", guard, (_req, res) => {
-    res.json({ models: AVAILABLE_MODELS });
+    // Reports what this deployment can actually serve, and whether the model is the
+    // client's to choose at all, so the widget doesn't render a dead picker.
+    res.json(modelCatalog());
   });
 
   // --- Anonymous usage analytics (opt-in from widget) ---
@@ -368,7 +370,7 @@ export function createServer(config: ServerConfig = {}): Express {
         "/v1/voice/stt": { post: { summary: "Speech-to-text" } },
         "/v1/voice/capabilities": { get: { summary: "Which voice providers are configured" } },
         "/v1/agent": { post: { summary: "External agent endpoint" } },
-        "/v1/models": { get: { summary: "Available LLM models" } },
+        "/v1/models": { get: { summary: "Available LLM models + whether the model is fixed server-side" } },
         "/v1/usage": { get: { summary: "Usage aggregates (tokens/requests today)" } },
         "/v1/usage/dashboard": { get: { summary: "HTML usage dashboard" } },
         "/v1/analytics": { get: { summary: "Usage events" }, post: { summary: "Track event" } },

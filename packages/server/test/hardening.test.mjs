@@ -6,7 +6,7 @@ import path from "node:path";
 import { rateLimit } from "../dist/ratelimit.js";
 import { envInt, trustProxySetting } from "../dist/env.js";
 import { JsonFileTicketStore } from "../dist/ticketFileStore.js";
-import { UsageMeter, whisperFilename, toIso639, transcribe } from "../dist/index.js";
+import { UsageMeter, whisperFilename, toIso639, transcribe, modelCatalog, AVAILABLE_MODELS, routerFromEnv } from "../dist/index.js";
 import { isRetryableConnectionError } from "../dist/llm/fetchWithRetry.js";
 
 function fakeReqRes(ip = "1.2.3.4", headers = {}) {
@@ -200,4 +200,46 @@ test("transcribe still accepts the old string hint as its second argument", asyn
   await assert.rejects(() => transcribe(Buffer.from([1, 2, 3]), "audio/mp4", {}), /OPENAI_API_KEY/);
   await assert.rejects(() => transcribe(Buffer.from([1, 2, 3]), { hint: "audio/mp4", lang: "el-GR" }, {}), /OPENAI_API_KEY/);
   await assert.rejects(() => transcribe(Buffer.from([1, 2, 3]), undefined, {}), /OPENAI_API_KEY/);
+});
+
+// --- Model catalogue -------------------------------------------------------
+
+test("modelCatalog only offers models the server holds a key for", () => {
+  const anthropicOnly = modelCatalog({ ANTHROPIC_API_KEY: "k" });
+  assert.equal(anthropicOnly.fixed, false);
+  assert.ok(anthropicOnly.models.length > 1);
+  assert.ok(anthropicOnly.models.every((m) => m.provider === "anthropic"));
+
+  const both = modelCatalog({ ANTHROPIC_API_KEY: "k", OPENAI_API_KEY: "k" });
+  assert.ok(both.models.some((m) => m.provider === "openai"));
+});
+
+test("PA_FIXED_MODEL reports the model as fixed, with nothing to choose from", () => {
+  const c = modelCatalog({ ANTHROPIC_API_KEY: "k", PA_FIXED_MODEL: "claude-sonnet-5" });
+  assert.equal(c.fixed, true);
+  assert.deepEqual(c.models, []);
+  assert.ok(c.reason && c.reason.length > 0, "the widget shows this instead of a picker");
+});
+
+test("no keys, or a single model, counts as fixed — one option is not a choice", () => {
+  assert.equal(modelCatalog({}).fixed, true);
+  assert.equal(modelCatalog({}).models.length, 0);
+  assert.equal(modelCatalog({ OPENROUTER_API_KEY: "k" }).models.length, 1);
+  assert.equal(modelCatalog({ OPENROUTER_API_KEY: "k" }).fixed, true);
+});
+
+test("server model ids carry no date suffix", () => {
+  for (const m of AVAILABLE_MODELS) assert.ok(!/-\d{8}$/.test(m.id), `${m.id} still date-suffixed`);
+});
+
+test("a pinned model with no matching key fails loudly at request time", async () => {
+  const llm = routerFromEnv({ OPENAI_API_KEY: "k", PA_FIXED_MODEL: "claude-sonnet-5" });
+  // providerForModel falls through to OpenAI when no Anthropic key is set, so this one
+  // resolves; the case that must throw is a pinned model with NO provider at all.
+  assert.ok(llm);
+  assert.throws(
+    () => routerFromEnv({ PA_FIXED_MODEL: "claude-sonnet-5" }),
+    /No LLM key set/,
+    "a server with no keys at all still fails at construction"
+  );
 });

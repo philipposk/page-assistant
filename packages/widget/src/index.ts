@@ -61,10 +61,19 @@ export interface PageAssistantConfig {
   /** Use extended settings modal (model, theme, chat export). Default true. */
   useExtendedSettings?: boolean;
   /**
-   * Show the model picker in settings. Set false where the server fixes the
-   * model — a dropdown that silently does nothing is worse than none.
+   * Whether the user may choose the LLM model in the settings panel.
+   *
+   * `"auto"` (the default) asks the server: `GET /v1/models` reports whether the model is
+   * fixed server-side and which models it actually holds keys for, and the picker is
+   * hidden unless there is a real choice to make.
+   *
+   * `false` hides it outright — use it when your own server pins the model and ignores
+   * what the client asks (so a visitor cannot upgrade themselves onto a costlier one).
+   * A dropdown that silently changes nothing is worse than none.
+   *
+   * `true` always shows it. Was `boolean` before 0.5.1; `true`/`false` mean what they did.
    */
-  showModelPicker?: boolean;
+  showModelPicker?: boolean | "auto";
   /** What to say instead, when the picker is hidden. */
   modelFixedNote?: string;
   onSettings?: () => void;
@@ -162,6 +171,7 @@ export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analyt
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 export { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
 export { setVoiceDefaults, getVoiceDefaults } from "./settings.js";
+export { fetchModelCatalog, type ModelCatalog, type ModelChoice } from "./models.js";
 export { resolveVoiceLang, voiceInputAvailable } from "./voice.js";
 
 class PageAssistantController {
@@ -258,8 +268,11 @@ class PageAssistantController {
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
       serverUrl: cfg.serverUrl,
       authToken: cfg.authToken,
-      showModel: cfg.showModelPicker,
+      modelPicker: cfg.showModelPicker,
       modelFixedNote: cfg.modelFixedNote,
+      // Both settings surfaces get the same translations as the widget chrome; leaving
+      // them English beside a translated panel reads as broken, not as untranslated.
+      strings: cfg.strings,
     };
 
     this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
@@ -494,7 +507,7 @@ class PageAssistantController {
       try {
         const url = new URL(this.cfg.knowledgeUrl, location.href);
         if (url.origin !== location.origin) {
-          this.ui.addMessage("system", "Skipped knowledge fetch: cross-origin URLs are not allowed.");
+          this.ui.addMessage("system", this.strings.knowledgeCrossOriginSkipped);
         } else {
           const res = await fetch(url.href);
           if (res.ok) this.assistant.setKnowledge((await res.text()).slice(0, 6000));
@@ -534,7 +547,7 @@ class PageAssistantController {
     if (this.pending) {
       // A new message supersedes a stale pending confirmation — clear its live buttons.
       this.clearPending();
-      this.ui.addMessage("system", "Previous pending action cancelled.");
+      this.ui.addMessage("system", this.strings.pendingActionCancelled);
     }
     const message = formatAttachmentsForPrompt(text, attachments ?? []);
     if (!message.trim()) return;
@@ -627,7 +640,7 @@ class PageAssistantController {
     this.ui.clearHighlight();
     if (!approved || !this.pending) {
       this.pending = undefined;
-      this.ui.addMessage("system", "Cancelled.");
+      this.ui.addMessage("system", this.strings.actionCancelled);
       return;
     }
     const pending = this.pending;

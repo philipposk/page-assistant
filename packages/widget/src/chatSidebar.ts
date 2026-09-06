@@ -1,5 +1,6 @@
 import type { ChatSession, ChatGroup, ChatHistoryStore } from "./chatHistory.js";
 import { CHAT_HISTORY_CHANGE_EVENT } from "./chatHistory.js";
+import { DEFAULT_STRINGS, fmt, type WidgetStrings } from "./strings.js";
 
 export interface ChatSidebarHandlers {
   onSelect: (id: string) => void;
@@ -101,7 +102,9 @@ export class ChatSidebar {
   constructor(
     private store: ChatHistoryStore,
     private handlers: ChatSidebarHandlers,
-    private activeId: string | null
+    private activeId: string | null,
+    /** Resolved chrome strings. Defaults keep this constructor's old 3-arg call sites working. */
+    private s: WidgetStrings = DEFAULT_STRINGS
   ) {}
 
   render(): HTMLDivElement {
@@ -112,8 +115,8 @@ export class ChatSidebar {
 
     const head = el("div", "sidebar-head");
     this.searchInput = el("input") as HTMLInputElement;
-    this.searchInput.placeholder = "Search chats…";
-    this.searchInput.setAttribute("aria-label", "Search chats");
+    this.searchInput.placeholder = this.s.sidebarSearch;
+    this.searchInput.setAttribute("aria-label", this.s.sidebarSearch);
     this.searchInput.oninput = () => {
       this.query = this.searchInput.value;
       this.handlers.onSearch(this.query);
@@ -121,14 +124,14 @@ export class ChatSidebar {
     };
     const toggleBtn = el("button", "toggle-sidebar") as HTMLButtonElement;
     toggleBtn.textContent = "◀";
-    toggleBtn.title = "Collapse sidebar";
-    toggleBtn.setAttribute("aria-label", "Collapse chat history sidebar");
+    toggleBtn.title = this.s.sidebarCollapse;
+    toggleBtn.setAttribute("aria-label", this.s.sidebarCollapse);
     toggleBtn.onclick = () => this.handlers.onToggle(false);
     head.append(this.searchInput, toggleBtn);
 
     const newBtn = el("button", "new-chat") as HTMLButtonElement;
-    newBtn.textContent = "+ New chat";
-    newBtn.setAttribute("aria-label", "Start a new chat");
+    newBtn.textContent = this.s.sidebarNewChat;
+    newBtn.setAttribute("aria-label", this.s.sidebarNewChatLabel);
     newBtn.onclick = () => this.handlers.onNew();
 
     this.listEl = el("div", "sidebar-list") as HTMLDivElement;
@@ -165,7 +168,7 @@ export class ChatSidebar {
     const archived = sessions.filter((s) => s.archived);
 
     if (pinned.length) {
-      this.addSection("Pinned");
+      this.addSection(this.s.sidebarPinned);
       for (const s of pinned) this.addItem(s);
     }
 
@@ -189,12 +192,12 @@ export class ChatSidebar {
     }
 
     if (ungrouped.length) {
-      this.addSection("Recent");
+      this.addSection(this.s.sidebarRecent);
       const visible = ungrouped.slice(0, this.showLimit);
       for (const s of visible) this.addItem(s);
       if (ungrouped.length > this.showLimit) {
         const more = el("button", "show-more") as HTMLButtonElement;
-        more.textContent = `Show ${ungrouped.length - this.showLimit} more…`;
+        more.textContent = fmt(this.s.sidebarShowMore, { count: String(ungrouped.length - this.showLimit) });
         more.onclick = () => {
           this.showLimit += PAGE_SIZE;
           this.refresh();
@@ -204,13 +207,13 @@ export class ChatSidebar {
     }
 
     if (archived.length) {
-      this.addSection("Archived");
+      this.addSection(this.s.sidebarArchived);
       for (const s of archived.slice(0, 5)) this.addItem(s);
     }
 
     if (!sessions.length) {
       const empty = el("div", "section-label");
-      empty.textContent = "No chats yet";
+      empty.textContent = this.s.sidebarEmpty;
       this.listEl.appendChild(empty);
     }
   }
@@ -233,7 +236,7 @@ export class ChatSidebar {
 
     const menuBtn = el("button", "chat-menu-btn") as HTMLButtonElement;
     menuBtn.textContent = "⋯";
-    menuBtn.setAttribute("aria-label", `Actions for "${session.title}"`);
+    menuBtn.setAttribute("aria-label", fmt(this.s.sidebarChatActions, { title: session.title }));
     menuBtn.setAttribute("aria-haspopup", "menu");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
@@ -255,17 +258,17 @@ export class ChatSidebar {
     const menu = el("div", "ctx-menu") as HTMLDivElement;
     menu.setAttribute("role", "menu");
     const items: Array<{ label: string; action: () => void; danger?: boolean }> = [
-      { label: "Rename", action: () => this.promptRename(session) },
-      { label: "Fork", action: () => this.handlers.onFork(session.id) },
-      { label: session.pinned ? "Unpin" : "Pin", action: () => this.handlers.onPin(session.id, !session.pinned) },
-      { label: "Mark unread", action: () => this.handlers.onMarkUnread(session.id) },
-      { label: "Share (copy JSON)", action: () => this.handlers.onShare(session.id) },
-      { label: session.archived ? "Unarchive" : "Archive", action: () => this.handlers.onArchive(session.id) },
+      { label: this.s.menuRename, action: () => this.promptRename(session) },
+      { label: this.s.menuFork, action: () => this.handlers.onFork(session.id) },
+      { label: session.pinned ? this.s.menuUnpin : this.s.menuPin, action: () => this.handlers.onPin(session.id, !session.pinned) },
+      { label: this.s.menuMarkUnread, action: () => this.handlers.onMarkUnread(session.id) },
+      { label: this.s.menuShare, action: () => this.handlers.onShare(session.id) },
+      { label: session.archived ? this.s.menuUnarchive : this.s.menuArchive, action: () => this.handlers.onArchive(session.id) },
       {
-        label: "Delete",
+        label: this.s.menuDelete,
         action: () => {
           // Deletion is destructive and irreversible — confirm first.
-          if (typeof confirm === "function" && !confirm(`Delete "${session.title}"? This can't be undone.`)) return;
+          if (typeof confirm === "function" && !confirm(fmt(this.s.deleteChatConfirm, { title: session.title }))) return;
           this.handlers.onDelete(session.id);
         },
         danger: true,
@@ -340,7 +343,7 @@ export class ChatSidebar {
   }
 
   private promptRename(session: ChatSession) {
-    const title = prompt("Rename chat:", session.title);
+    const title = prompt(this.s.renameChatPrompt, session.title);
     if (title?.trim()) this.handlers.onRename(session.id, title.trim());
   }
 }

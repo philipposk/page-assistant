@@ -277,7 +277,7 @@ export class WidgetUI {
         onToggle: (open) => this.setSidebarOpen(open),
       };
       this.opts.onSidebarHandlers?.(handlers);
-      this.sidebar = new ChatSidebar(this.opts.chatStore, handlers, this.opts.chatStore.getActiveId());
+      this.sidebar = new ChatSidebar(this.opts.chatStore, handlers, this.opts.chatStore.getActiveId(), this.s);
       this.sidebarEl = this.sidebar.render();
       if (!this.sidebarOpen) this.sidebar.setCollapsed(true);
       this.panel.appendChild(this.sidebarEl);

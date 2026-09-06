@@ -2,6 +2,63 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.5.1 — The rest of the translation, a themed panel, and an honest model picker
+
+Found by running 0.5.0 in a live Greek app. 0.5.0 translated the widget chrome and left
+the sidebar and both settings modals in English, which reads worse than the fully-English
+widget did — it looks broken rather than untranslated.
+
+### Localisation finished
+
+- **`strings` now covers the chat sidebar and both settings modals**, not just `ui.ts`:
+  the search placeholder, "Collapse sidebar", "+ New chat", "No chats yet", the
+  Pinned/Recent/Archived section headings, `Actions for "…"`, every context-menu item, the
+  rename prompt and the delete confirmation — plus every label, option, hint and note in
+  the voice modal and all three tabs of the extended settings modal.
+- 70 new keys, same rules as before: flat, English defaults, blank overrides ignored.
+- **A key a host has never heard of falls back rather than failing.** `resolveStrings` now
+  ignores keys that are not part of the current set instead of merging them in, so a host
+  written against 0.5.0 (which knows none of the new keys) keeps English for the rest, and
+  one written against a later version does not inject stray keys into this one.
+- Three controller messages that were still hardcoded are now overridable: "Cancelled.",
+  "Previous pending action cancelled.", and the cross-origin knowledge-fetch notice.
+
+### The settings modal follows the host's theme
+
+- Both settings surfaces painted themselves with hardcoded dark greens (`#e7f5ec` on
+  `#0b1310`, `#244234` borders) regardless of the app around them, so a light-themed app
+  opened a black-green modal beside its own chrome — and a host that had explicitly set
+  `theme: "light"` got one anyway. They now use the widget's `--pa-*` theme tokens and
+  follow the stored light/dark/system choice, re-theming live when it changes or when the
+  OS flips under `system`.
+- They also set `color-scheme`, so the native `<select>` popups, checkboxes and focus
+  rings match instead of rendering white dropdowns over dark rows.
+- New tokens: `--pa-accent-hover` and `--pa-bg-elevated`. The voice modal's duplicated
+  copy of the panel stylesheet is gone — both surfaces share one themed sheet.
+
+### The model picker no longer lies
+
+- **Refreshed the list.** Ids are exact and carry no date suffix. Out: Claude Sonnet 4
+  (`claude-sonnet-4-20250514`), Claude 3.5 Haiku, and the date-suffixed
+  `claude-haiku-4-5-20251001`. In, newest first: **Claude Opus 5** (`claude-opus-5`),
+  **Claude Sonnet 5** (`claude-sonnet-5`), **Claude Haiku 4.5** (`claude-haiku-4-5`) and
+  **Claude Fable 5.1** (`claude-fable-5-1`), then the GPT-4o pair and an OpenRouter route.
+- **A dead control is no longer shown.** `showModelPicker` widens from `boolean` to
+  `boolean | "auto"` and now defaults to `"auto"`, which asks the server. `false` still
+  hides it outright — the answer for a host whose own server pins the model and ignores
+  what the client sends.
+- **`GET /v1/models` answers the question.** It now returns `{ models, fixed, reason? }`,
+  filters `models` to the providers the server actually holds keys for, and reports
+  `fixed: true` when `PA_FIXED_MODEL` is set or when there is at most one model to choose
+  between. One option is not a choice.
+- **`PA_FIXED_MODEL` is enforced, not advertised.** When set, the router ignores the
+  client's `model` outright, so a visitor cannot upgrade themselves onto a costlier one.
+- **The default model is now "let the server choose"** (`model: ""`, sending no override).
+  It was `gpt-4o-mini`, so every widget named an OpenAI model even against an
+  Anthropic-only server — which the router rejects with a hard error. The picker gains an
+  explicit "Server default (recommended)" option, and a stored model the server no longer
+  offers falls back to it instead of rendering a blank box.
+
 ## 0.5.0 — Language, and controls that tell the truth
 
 The mic was hardcoded to `en-US` and every label in the widget was hardcoded English. In a

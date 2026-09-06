@@ -1,6 +1,6 @@
 {
   "name": "page-assistant-monorepo",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Embeddable, grounded, voice-capable page assistant that can read any web app and perform real actions for the user.",
   "license": "MIT",
