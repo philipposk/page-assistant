@@ -24,6 +24,22 @@ export interface VoiceOptions {
   /** Preferred browser voice name substring, e.g. "Samantha". */
   browserVoice?: string;
   /**
+   * BCP-47 language for speech recognition and speech synthesis, e.g. "el-GR", "en-GB".
+   *
+   * Resolution order, evaluated on every mic tap / every utterance (never cached at
+   * module load, so a host that flips its `<html lang>` when the user switches language
+   * is picked up on the next tap without a reload):
+   *   1. this option, when the host sets it — ALWAYS wins;
+   *   2. `document.documentElement.lang`;
+   *   3. `navigator.language`;
+   *   4. "en-US".
+   *
+   * Set it explicitly if you know the language. `<html lang>` is only a last resort: a
+   * host can render a fully translated UI while its root element still says "en", and
+   * then the recogniser is told the wrong language and returns nothing.
+   */
+  lang?: string;
+  /**
    * Voice-activity detection engine for barge-in. "builtin" (default) uses a
    * zero-dependency AnalyserNode RMS meter. "silero" lazy-loads @ricky0123/vad-web
    * from a CDN at runtime (opt-in, not bundled — no bundle-size impact when unused).
@@ -43,6 +59,44 @@ export interface ListenHooks {
 
 const SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
 
+/**
+ * Resolve the BCP-47 language to use for speech I/O. Called per utterance, never cached:
+ * a host that swaps `<html lang>` on a language switch is honoured on the next mic tap.
+ * An explicit value always wins — `<html lang>` can lie (a translated UI whose root
+ * element still says "en"), so it is only consulted when the host said nothing.
+ */
+export function resolveVoiceLang(explicit?: string): string {
+  const set = explicit?.trim();
+  if (set) return set;
+  if (typeof document !== "undefined") {
+    const htmlLang = document.documentElement?.lang?.trim();
+    if (htmlLang) return htmlLang;
+  }
+  if (typeof navigator !== "undefined" && navigator.language?.trim()) return navigator.language.trim();
+  return "en-US";
+}
+
+/** "el-GR" → "el". Whisper and ElevenLabs want the bare ISO-639-1 code. */
+export function baseLang(lang: string): string {
+  return lang.toLowerCase().replace(/_/g, "-").split("-")[0];
+}
+
+/**
+ * True when a mic tap could actually produce a transcript: the browser has
+ * SpeechRecognition, or there is a server to send recorded audio to AND the browser can
+ * record. Used to avoid rendering a mic button that can only ever do nothing.
+ */
+export function voiceInputAvailable(serverUrl?: string): boolean {
+  if (typeof window === "undefined") return false;
+  if ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) return true;
+  return (
+    !!serverUrl &&
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof (window as any).MediaRecorder !== "undefined"
+  );
+}
+
 export class Voice {
   private speaking = false;
   private currentAudio?: HTMLAudioElement;
@@ -55,6 +109,11 @@ export class Voice {
 
   get isSpeaking() {
     return this.speaking;
+  }
+
+  /** The language for this utterance/listen. Resolved now, not at construction. */
+  private lang(): string {
+    return resolveVoiceLang(this.opts.lang);
   }
 
   async speak(text: string, onWord?: (t: string) => void): Promise<void> {
@@ -70,9 +129,12 @@ export class Voice {
       if (!("speechSynthesis" in window)) return resolve();
       const u = new SpeechSynthesisUtterance(text);
       this.currentUtterance = u;
-      if (this.opts.browserVoice) {
-        const v = speechSynthesis.getVoices().find((x) => x.name.includes(this.opts.browserVoice!));
-        if (v) u.voice = v;
+      const lang = this.lang();
+      u.lang = lang;
+      const v = this.pickBrowserVoice(lang);
+      if (v) {
+        u.voice = v;
+        u.lang = v.lang || lang;
       }
       let settled = false;
       const done = () => {
@@ -96,6 +158,35 @@ export class Voice {
     });
   }
 
+  /**
+   * Choose a synthesis voice for `lang`. Language beats the host's `browserVoice` name
+   * hint, because a name like "Samantha" is an en-US voice and reading Greek with it is
+   * unintelligible. The name still wins inside the same base language, so an app that
+   * asked for "Daniel" keeps Daniel while the page is in English.
+   */
+  private pickBrowserVoice(lang: string): SpeechSynthesisVoice | undefined {
+    let voices: SpeechSynthesisVoice[] = [];
+    try {
+      voices = speechSynthesis.getVoices() ?? [];
+    } catch {
+      return undefined;
+    }
+    if (!voices.length) return undefined; // Chrome populates async; leave u.lang to decide
+    const want = lang.toLowerCase().replace(/_/g, "-");
+    const wantBase = baseLang(lang);
+    const named = this.opts.browserVoice
+      ? voices.filter((v) => v.name.includes(this.opts.browserVoice!))
+      : [];
+    const vLang = (v: SpeechSynthesisVoice) => (v.lang ?? "").toLowerCase().replace(/_/g, "-");
+    return (
+      named.find((v) => vLang(v) === want) ??
+      named.find((v) => baseLang(vLang(v)) === wantBase) ??
+      voices.find((v) => vLang(v) === want) ??
+      voices.find((v) => baseLang(vLang(v)) === wantBase) ??
+      named[0]
+    );
+  }
+
   private async speakServer(text: string): Promise<void> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
@@ -108,6 +199,7 @@ export class Voice {
           text,
           voiceId: this.opts.voiceId,
           provider: this.opts.ttsProvider,
+          lang: this.lang(),
         }),
       });
     } catch {
@@ -345,7 +437,9 @@ export class Voice {
     return new Promise((resolve, reject) => {
         const r = new SR();
         this.activeRecognition = r;
-        r.lang = "en-US";
+        // Told the wrong language, the recogniser returns nothing or nonsense — which used
+        // to land on the silent empty-string path. Resolve it per tap.
+        r.lang = this.lang();
         r.interimResults = false;
         r.maxAlternatives = 1;
         let settled = false;
@@ -476,11 +570,16 @@ export class Voice {
       if (cancelled) return "";
       const blob = new Blob(chunks, { type: "audio/webm" });
       if (!blob.size) throw new VoiceError("no-speech");
-      const headers: Record<string, string> = { "content-type": "application/octet-stream" };
+      const lang = this.lang();
+      const headers: Record<string, string> = {
+        "content-type": "application/octet-stream",
+        // Give Whisper the language instead of letting it guess from a 4s clip.
+        "x-audio-lang": lang,
+      };
       if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
       let res: Response;
       try {
-        res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
+        res = await fetch(`${this.opts.serverUrl}/v1/voice/stt?lang=${encodeURIComponent(lang)}`, {
           method: "POST",
           headers,
           body: await blob.arrayBuffer(),

@@ -229,7 +229,9 @@ export function createServer(config: ServerConfig = {}): Express {
       }
       // Honor a format hint from the browser (Safari records mp4) so Whisper labels it right.
       const hint = (req.headers["x-audio-content-type"] as string) || (req.query.format as string) || undefined;
-      const text = await transcribe(req.body, hint);
+      // Language hint from the widget (header or ?lang=) so Whisper isn't guessing.
+      const lang = (req.headers["x-audio-lang"] as string) || (req.query.lang as string) || undefined;
+      const text = await transcribe(req.body, { hint, lang });
       res.json({ text });
     } catch (e) {
       handleError(res, e, "/v1/voice/stt", reqId(req));

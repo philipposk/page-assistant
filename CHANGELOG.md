@@ -2,6 +2,70 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.5.0 — Language, and controls that tell the truth
+
+The mic was hardcoded to `en-US` and every label in the widget was hardcoded English. In a
+Greek app that meant a mic button that returned nothing (a recogniser told the wrong
+language hears nothing it can transcribe) inside an English chrome wrapped around Greek
+replies. This release makes both the language and the chrome the host's to set. All
+packages bumped `0.4.0 → 0.5.0` together.
+
+### Language
+
+- **`lang` on `PageAssistantConfig` and `VoiceOptions`** (BCP-47, e.g. `"el-GR"`). Applied
+  to `SpeechRecognition`, to `speechSynthesis`, to Whisper STT and to ElevenLabs TTS, and
+  set on the widget's host element for assistive tech.
+- **Resolved per call, not at module load:** the explicit option first, then
+  `document.documentElement.lang`, then `navigator.language`, then `"en-US"`. A host that
+  flips `<html lang>` when the user switches language is followed on the next mic tap with
+  no reload. An explicit `lang` always wins — `<html lang>` is only a last resort, because
+  a host can render a fully translated UI while its root element still says `"en"`.
+- **Speech synthesis picks by language before name.** `browserVoice: "Samantha"` is an
+  en-US voice; reading Greek with it is unintelligible. A voice matching the target
+  language now wins across languages, while the name hint still wins inside the same
+  language (an app that asked for "Daniel" keeps Daniel while the page is in English).
+- **Server voice takes the hint.** The widget sends `x-audio-lang` (and `?lang=`) with the
+  STT upload and `lang` in the TTS body. `transcribe()` passes `language` to Whisper
+  instead of letting it guess from a 4-second clip; `synthesize()` passes `language_code`
+  to ElevenLabs. `transcribe(audio, hint, env)` still accepts its old string second
+  argument, so existing callers are untouched.
+
+### Localisable chrome
+
+- **`strings` on `PageAssistantConfig`** — a flat `Partial<WidgetStrings>` overriding the
+  input placeholder, every button, every `aria-label` and `title`, the toasts, `Confirm` /
+  `Cancel` / `Retry` / `Try:`, the page-scan status, and the voice error messages
+  ("I didn't catch that…", "Microphone permission denied…", the server-STT fallback
+  notice). Omitted keys keep their English default; blank values are ignored rather than
+  blanking a label. `DEFAULT_STRINGS` and the `WidgetStrings` type are exported.
+- Deliberately not an i18n framework: no locale negotiation, no plural rules, no message
+  files. The host already knows what language it is in.
+- Chat-sidebar labels (rename prompt, search, context menu) are not covered yet.
+
+### A control that cannot work is not shown as one
+
+- **The mic button is disabled when nothing can back it** — no `SpeechRecognition` and no
+  `serverUrl` for server STT — with a `title`/`aria-label` saying why. A button that
+  silently does nothing was the whole shape of the reported bug.
+
+### UX
+
+- **The read-aloud toggle is a speaker, not a telephone.** `☎` read as "call support"
+  rather than "speak this reply"; the launcher's telephone had already been replaced with
+  a choosable mark and this second one was missed. On (`🔊`) and off (`🔈`) are different
+  marks, not just a colour change.
+- **Page-scan chatter is a transient toast, not permanent chat messages.** "Reading this
+  app…" and "Ready — mapped 6 pages, 22 controls." used to sit in the transcript forever,
+  in English among translated replies; the count was developer telemetry that meant
+  nothing to the people using these apps. Both now pass through `strings`, and the counts
+  are gone from the UI.
+
+### Reconciled branches
+
+- `verbatim` (a capability whose `render()` replaces the model's prose, for figures that
+  only mean something beside their label) and the choosable launcher mark are now on the
+  same line as the 0.4 hardening. Neither branch contained the other.
+
 ## 0.4.0 — Production hardening
 
 A hardening release across security, reliability, UX, accessibility, and distribution,

@@ -7,6 +7,15 @@ export interface TTSRequest {
   text: string;
   voiceId?: string;
   provider?: "elevenlabs" | "openai";
+  /** BCP-47 hint, e.g. "el-GR". Optional; providers auto-detect when it is absent. */
+  lang?: string;
+}
+
+/** "el-GR" → "el". Whisper and ElevenLabs both want the bare ISO-639-1 code. */
+export function toIso639(lang?: unknown): string | undefined {
+  if (typeof lang !== "string") return undefined;
+  const base = lang.trim().toLowerCase().replace(/_/g, "-").split("-")[0];
+  return /^[a-z]{2,3}$/.test(base) ? base : undefined;
 }
 
 export async function synthesize(req: TTSRequest, env = process.env): Promise<{ audio: Buffer; contentType: string }> {
@@ -18,7 +27,13 @@ export async function synthesize(req: TTSRequest, env = process.env): Promise<{ 
       {
         method: "POST",
         headers: { "content-type": "application/json", "xi-api-key": env.ELEVENLABS_API_KEY, accept: "audio/mpeg" },
-        body: JSON.stringify({ text: req.text, model_id: "eleven_flash_v2_5" }),
+        // eleven_flash_v2_5 is multilingual; language_code pins it instead of letting it
+        // guess from the text (short Greek strings were being read as English).
+        body: JSON.stringify({
+          text: req.text,
+          model_id: "eleven_flash_v2_5",
+          ...(toIso639(req.lang) ? { language_code: toIso639(req.lang) } : {}),
+        }),
       },
       { timeoutMs: voiceTimeoutMs() }
     );
@@ -55,12 +70,30 @@ export function whisperFilename(contentType?: string): string {
   return "audio.webm";
 }
 
+export interface TranscribeOptions {
+  /** Browser MediaRecorder mimeType ("audio/mp4") or an explicit filename ("clip.mp4"). */
+  hint?: string;
+  /** BCP-47 or ISO-639-1 language of the speech, e.g. "el-GR" / "el". */
+  lang?: string;
+}
+
 /**
- * Whisper STT. Accepts raw audio bytes and an optional content-type hint (the browser's
- * MediaRecorder mimeType) so Safari's mp4 recordings are labelled correctly.
+ * Whisper STT. Accepts raw audio bytes plus an optional hint (the browser's MediaRecorder
+ * mimeType) so Safari's mp4 recordings are labelled correctly.
+ *
+ * The second argument accepts either the plain hint string it always took, or an options
+ * object that can also carry the language — existing callers passing a string (or nothing)
+ * are unaffected.
  */
-export async function transcribe(audio: Buffer, contentTypeOrFilename?: string, env = process.env): Promise<string> {
+export async function transcribe(
+  audio: Buffer,
+  hintOrOptions?: string | TranscribeOptions,
+  env = process.env
+): Promise<string> {
   if (!env.OPENAI_API_KEY) throw new Error("STT needs OPENAI_API_KEY.");
+  const opts: TranscribeOptions =
+    typeof hintOrOptions === "string" ? { hint: hintOrOptions } : hintOrOptions ?? {};
+  const contentTypeOrFilename = opts.hint;
   // Accept either a raw content-type ("audio/mp4") or an explicit filename ("clip.mp4").
   const filename =
     contentTypeOrFilename && /\.[a-z0-9]+$/i.test(contentTypeOrFilename)
@@ -69,6 +102,10 @@ export async function transcribe(audio: Buffer, contentTypeOrFilename?: string, 
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(audio)]), filename);
   form.append("model", "whisper-1");
+  // Whisper guesses the language from the audio when not told. On a 4s clip that guess is
+  // often wrong, and a Greek speaker got English gibberish back.
+  const iso = toIso639(opts.lang);
+  if (iso) form.append("language", iso);
   const res = await fetchWithRetry(
     "https://api.openai.com/v1/audio/transcriptions",
     { method: "POST", headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` }, body: form },

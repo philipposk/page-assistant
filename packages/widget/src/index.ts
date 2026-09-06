@@ -7,7 +7,7 @@ import {
   type PageContext,
 } from "@page-assistant/core";
 import { proxyProvider, ProxyError } from "./llmProxy.js";
-import { Voice, VoiceError, type VoiceOptions } from "./voice.js";
+import { Voice, VoiceError, voiceInputAvailable, type VoiceOptions } from "./voice.js";
 import { WidgetUI } from "./ui.js";
 import { fullScan, scanPage } from "./scanner.js";
 import { LocalMemoryStore } from "./localMemory.js";
@@ -32,6 +32,7 @@ import {
 import { ChatHistoryStore } from "./chatHistory.js";
 import { formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
+import { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
 
 export interface PageAssistantConfig {
   serverUrl: string;
@@ -75,6 +76,29 @@ export interface PageAssistantConfig {
   imagesEnabled?: boolean;
   /** Per-request LLM timeout in ms (default 30000). */
   requestTimeoutMs?: number;
+  /**
+   * BCP-47 language for speech recognition and speech synthesis, e.g. "el-GR".
+   *
+   * Resolved on every mic tap and every spoken reply, in this order:
+   *   1. this option — ALWAYS wins when set;
+   *   2. `document.documentElement.lang`;
+   *   3. `navigator.language`;
+   *   4. "en-US".
+   *
+   * Set it explicitly if you know the language. `<html lang>` is only a last resort: a
+   * host can render a fully translated UI while its root element still says "en", and a
+   * recogniser told the wrong language returns nothing at all.
+   *
+   * Also passed to the server for Whisper STT and ElevenLabs TTS, and set on the widget's
+   * host element so assistive tech pronounces the chrome correctly.
+   */
+  lang?: string;
+  /**
+   * Override any of the widget's chrome strings (placeholder, buttons, aria-labels,
+   * toasts, voice errors). Anything omitted keeps its English default — see
+   * `DEFAULT_STRINGS` for the full key set.
+   */
+  strings?: Partial<WidgetStrings>;
 }
 
 export { capability } from "./capability.js";
@@ -118,6 +142,8 @@ export {
 } from "./assistant-settings-ui.js";
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
+export { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
+export { resolveVoiceLang, voiceInputAvailable } from "./voice.js";
 
 class PageAssistantController {
   private assistant: Assistant;
@@ -139,8 +165,11 @@ class PageAssistantController {
   private greetedChatId: string | null = null;
   private notedSttFallback = false;
   private destroyed = false;
+  /** English defaults merged with whatever the host translated. */
+  private strings: WidgetStrings = DEFAULT_STRINGS;
 
   constructor(private cfg: PageAssistantConfig) {
+    this.strings = resolveStrings(cfg.strings);
     this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
     this.assistantSettingsKey = cfg.assistantSettingsStorageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
     const assistantSettings = getAssistantSettings(this.assistantSettingsKey);
@@ -195,6 +224,8 @@ class PageAssistantController {
         vo = { serverUrl: cfg.serverUrl, ...cfg.voice };
       }
       if (cfg.authToken) vo = { ...vo, authToken: cfg.authToken };
+      // An explicit widget-level lang wins unless the voice options set their own.
+      if (cfg.lang && !vo.lang) vo = { ...vo, lang: cfg.lang };
       this.voice = new Voice(vo);
     }
 
@@ -231,6 +262,11 @@ class PageAssistantController {
       theme: assistantSettings.theme,
       sidebarOpen: assistantSettings.sidebarOpen,
       imagesEnabled: cfg.imagesEnabled,
+      strings: this.strings,
+      lang: cfg.lang,
+      // Don't render a mic that can only ever do nothing. Only relevant when voice is on
+      // at all — `voice: false` keeps the existing "Voice is off for this app." message.
+      micAvailable: cfg.voice === false ? undefined : voiceInputAvailable(cfg.serverUrl),
     });
 
     if (this.activeChatId && this.history.length) {
@@ -290,10 +326,12 @@ class PageAssistantController {
       if (patch.voice === false) {
         this.voice = undefined;
       } else {
-        const vo: VoiceOptions =
+        let vo: VoiceOptions =
           patch.voice === true
             ? { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken }
             : { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken, ...patch.voice };
+        // Re-applied here too: a settings change rebuilds Voice and must not drop the language.
+        if (this.cfg.lang && !vo.lang) vo = { ...vo, lang: this.cfg.lang };
         this.voice = new Voice(vo);
       }
     }
@@ -441,14 +479,18 @@ class PageAssistantController {
     }
     if (this.cfg.autoScan !== false) {
       this.ui.setState("scanning");
-      this.ui.addMessage("system", "Reading this app…");
+      // Transient status, not permanent transcript entries. "mapped 6 pages, 22 controls"
+      // is developer telemetry that meant nothing to the people using these apps, and both
+      // lines sat in English among translated replies. Toast + mascot state say the same
+      // thing and disappear.
+      this.ui.toast(this.strings.scanning);
       try {
         this.map = await fullScan();
       } catch {
         this.map = { scannedAt: new Date().toISOString(), pages: [], controls: scanPage() };
       }
       this.ui.setState("idle");
-      this.ui.addMessage("system", `Ready — mapped ${this.map?.pages.length ?? 0} pages, ${this.map?.controls.length ?? 0} controls.`);
+      this.ui.toast(this.strings.scanReady);
     }
   }
 
@@ -600,7 +642,7 @@ class PageAssistantController {
 
   private async toggleMic() {
     if (!this.voice) {
-      this.ui.addMessage("system", "Voice is off for this app.");
+      this.ui.addMessage("system", this.strings.voiceOff);
       return;
     }
     // Second tap cancels an in-flight listen instead of being a no-op (was stuck up to 12s).
@@ -619,20 +661,20 @@ class PageAssistantController {
         onServerFallback: () => {
           if (this.notedSttFallback) return;
           this.notedSttFallback = true;
-          this.ui.addMessage("system", "Server voice isn't available here — using your browser's microphone instead.");
+          this.ui.addMessage("system", this.strings.voiceServerFallback);
         },
       });
     } catch (e) {
       if (e instanceof VoiceError) {
         const map: Record<string, string> = {
-          "no-speech": "I didn't catch that — tap the mic and try again.",
-          "not-allowed": "Microphone permission denied. Allow mic access in your browser to use voice.",
-          "no-mic": "No microphone was found.",
-          other: "I couldn't access the microphone.",
+          "no-speech": this.strings.voiceNoSpeech,
+          "not-allowed": this.strings.voiceNotAllowed,
+          "no-mic": this.strings.voiceNoMic,
+          other: this.strings.voiceError,
         };
         this.ui.addMessage("system", map[e.reason] ?? map.other);
       } else {
-        this.ui.addMessage("system", "I couldn't access the microphone.");
+        this.ui.addMessage("system", this.strings.voiceError);
       }
     } finally {
       this.listening = false;

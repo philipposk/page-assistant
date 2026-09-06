@@ -1,6 +1,6 @@
 {
   "name": "@page-assistant/cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "CLI for page-assistant: health check, chat, serve proxy.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },
@@ -15,7 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@page-assistant/server": "0.4.0"
+    "@page-assistant/server": "0.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

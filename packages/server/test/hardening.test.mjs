@@ -6,7 +6,7 @@ import path from "node:path";
 import { rateLimit } from "../dist/ratelimit.js";
 import { envInt, trustProxySetting } from "../dist/env.js";
 import { JsonFileTicketStore } from "../dist/ticketFileStore.js";
-import { UsageMeter, whisperFilename } from "../dist/index.js";
+import { UsageMeter, whisperFilename, toIso639, transcribe } from "../dist/index.js";
 import { isRetryableConnectionError } from "../dist/llm/fetchWithRetry.js";
 
 function fakeReqRes(ip = "1.2.3.4", headers = {}) {
@@ -173,4 +173,31 @@ test("daily token budget flips exceeded and gates further spend", () => {
   assert.equal(m.isBudgetExceeded(), true);
   assert.equal(m.snapshot().budget.exceeded, true);
   delete process.env.PA_DAILY_BUDGET;
+});
+
+// --- Language hint (BCP-47 → ISO-639-1) ------------------------------------
+
+test("toIso639 reduces a BCP-47 tag to the code Whisper/ElevenLabs want", () => {
+  assert.equal(toIso639("el-GR"), "el");
+  assert.equal(toIso639("EL_gr"), "el");
+  assert.equal(toIso639("en"), "en");
+  assert.equal(toIso639("en-US"), "en");
+});
+
+test("toIso639 rejects junk rather than sending a bad language to the provider", () => {
+  assert.equal(toIso639(undefined), undefined);
+  assert.equal(toIso639(""), undefined);
+  assert.equal(toIso639("   "), undefined);
+  assert.equal(toIso639("english"), undefined); // 7 letters, not a code
+  assert.equal(toIso639("1234"), undefined);
+  assert.equal(toIso639({ evil: true }), undefined); // body field, so it can be anything
+});
+
+test("transcribe still accepts the old string hint as its second argument", async () => {
+  // Backwards compatibility: callers that pass a content-type string (not an options
+  // object) must keep working. No key configured, so it throws before any network call —
+  // that it throws the KEY error and not a TypeError is the assertion.
+  await assert.rejects(() => transcribe(Buffer.from([1, 2, 3]), "audio/mp4", {}), /OPENAI_API_KEY/);
+  await assert.rejects(() => transcribe(Buffer.from([1, 2, 3]), { hint: "audio/mp4", lang: "el-GR" }, {}), /OPENAI_API_KEY/);
+  await assert.rejects(() => transcribe(Buffer.from([1, 2, 3]), undefined, {}), /OPENAI_API_KEY/);
 });

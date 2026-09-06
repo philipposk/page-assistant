@@ -134,10 +134,53 @@ session.)
 
 ## Voice
 
-- **Free / default:** text-only replies; browser `SpeechRecognition` for mic input. Toggle read-aloud with ☎ in the panel.
+- **Free / default:** text-only replies; browser `SpeechRecognition` for mic input. Toggle read-aloud with the speaker button (🔈 / 🔊) in the panel.
 - **Best quality:** built-in settings (gear icon) or `PageAssistant.mountVoiceSettingsPanel()` — pick ElevenLabs / OpenAI voices, browser vs server TTS/STT. Stored in `localStorage` (`page_assistant_voice_settings` by default).
 - **Host override:** `onSettings` replaces the built-in modal; `settingsPageUrl` adds a link to your app settings page.
 - **Barge-in:** talking over the assistant stops it instantly.
+- **No silent mic:** if the browser has no `SpeechRecognition` and there is no `serverUrl`
+  to send recorded audio to, the mic button renders visibly disabled with an explanation
+  rather than doing nothing when tapped.
+
+## Language
+
+The widget is English by default and stays that way unless you say otherwise.
+
+```js
+PageAssistant.init({
+  serverUrl: "https://api.example.com",
+  lang: "el-GR",                 // BCP-47: speech recognition, speech synthesis, Whisper, ElevenLabs
+  strings: {                     // any subset; omitted keys keep their English default
+    inputPlaceholder: "Ρωτήστε με κάτι…",
+    confirm: "Επιβεβαίωση",
+    cancel: "Άκυρο",
+    voiceNoSpeech: "Δεν σας άκουσα — δοκιμάστε ξανά.",
+  },
+});
+```
+
+**`lang`** is resolved on every mic tap and every spoken reply, in this order:
+
+1. the `lang` option — always wins when set;
+2. `document.documentElement.lang`;
+3. `navigator.language`;
+4. `"en-US"`.
+
+Set it explicitly if you know the language. `<html lang>` is a last resort only: a host can
+render a fully translated UI while its root element still says `"en"`, and a recogniser told
+the wrong language returns nothing at all — which used to surface as a mic button that
+produced no transcript, no error and no message. Because it is resolved per call, a host that
+flips `<html lang>` when the user switches language is followed on the next tap, no reload.
+
+`lang` is applied to `SpeechRecognition`, to the chosen `speechSynthesis` voice (language
+beats the `browserVoice` name hint across languages, so Greek text is not read by a US
+English voice), to Whisper STT (`x-audio-lang` / `?lang=`) and to ElevenLabs TTS
+(`language_code`).
+
+**`strings`** overrides the widget chrome — placeholder, buttons, `aria-label`s, toasts and
+the voice error messages. `import { DEFAULT_STRINGS } from "@page-assistant/widget"` for the
+full key set; blank values are ignored rather than blanking a label. Chat-sidebar labels are
+not covered yet.
 
 ## Deploying the server
 
@@ -201,7 +244,7 @@ version tag:
 ```bash
 # bump every package to the new version first (root + all 5 packages + internal pins),
 # commit, then:
-git tag v0.4.0 && git push --tags
+git tag v0.5.0 && git push --tags
 ```
 
 The workflow builds, typechecks, tests, and `npm publish`es core → widget → server →

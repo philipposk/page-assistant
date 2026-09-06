@@ -1,6 +1,6 @@
 {
   "name": "@page-assistant/server",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Node backend for the page assistant: LLM proxy, voice (TTS/STT), external agent endpoint, llm.txt hosting.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },
@@ -19,7 +19,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@page-assistant/core": "0.4.0",
+    "@page-assistant/core": "0.5.0",
     "express": "^4.21.0"
   },
   "devDependencies": {
