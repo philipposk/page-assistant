@@ -67,3 +67,30 @@ test("confirm-required capability stages instead of running", async () => {
   assert.equal(ran, false);
   assert.ok(res.pendingConfirmation);
 });
+
+test("verbatim capability is not paraphrased, so a label cannot be swapped", () => {
+  /* The regression this exists for: asked for withdrawals per partner, the
+     model reproduced both real amounts and attached each to the wrong name.
+     Every number was present in the trusted output, so the number check
+     passed it. Where a figure only means something next to its label, the
+     rendering has to be shown as written. */
+  const rendered = "Withdrawals in Aug: 1665.75 across 2. Anna 691.89 · Boris 973.86.";
+  const paraphrasedWrong = "Anna took 973.86 and Boris took 691.89.";
+
+  const out = validateFactualText(paraphrasedWrong, [
+    { name: "withdrawals_in_month", args: {}, ok: true, rendered, verbatim: true },
+  ]);
+
+  assert.equal(out.text, rendered);
+  assert.equal(out.wasCorrected, true);
+});
+
+test("without verbatim, honest prose is still left alone", () => {
+  const rendered = "Takings today: 450.50.";
+  const prose = "You took 450.50 today.";
+  const out = validateFactualText(prose, [
+    { name: "todays_takings", args: {}, ok: true, rendered },
+  ]);
+  assert.equal(out.text, prose);
+  assert.equal(out.wasCorrected, false);
+});

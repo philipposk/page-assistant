@@ -34,6 +34,20 @@ export interface Capability<A = any, R = any> {
    * for any factual claim. Omit for actions whose result needs no narration.
    */
   render?: (result: R, args: A) => string;
+  /**
+   * If true, render() IS the answer: the model's prose is discarded and the
+   * rendered text is shown as written.
+   *
+   * The factual validator checks that every number the model states appears
+   * somewhere in the trusted output. That catches an invented figure, but not
+   * a correctly-copied figure attached to the wrong label — asked to report
+   * withdrawals per partner, a model reproduced both real amounts and swapped
+   * whose was whose, and the validator passed it because both numbers were
+   * present. Set this wherever a figure only means something together with the
+   * name, date or category beside it: per-person splits, per-bank breakdowns,
+   * anything a reader would act on.
+   */
+  verbatim?: boolean;
   /** If true, the assistant must get explicit user confirmation before run() (writes, deletes). */
   confirm?: boolean;
   /** Optional tags for grouping in llm.txt / docs. */
@@ -121,6 +135,8 @@ export interface ToolInvocation {
   ok: boolean;
   result?: unknown;
   rendered?: string;
+  /** The capability asked for its render() to be shown as written. */
+  verbatim?: boolean;
   error?: string;
 }
 
