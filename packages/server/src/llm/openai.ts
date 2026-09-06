@@ -10,7 +10,7 @@ export function openaiProvider(opts: { apiKey: string; model?: string; baseUrl?:
   return {
     name: providerName,
     async complete(input: LLMCompletionInput): Promise<LLMCompletionOutput> {
-      const tools = input.tools.map((t) => ({
+      const tools = (input.tools ?? []).map((t) => ({
         type: "function",
         function: { name: t.name, description: t.description, parameters: { type: "object", ...t.parameters } },
       }));
@@ -20,8 +20,9 @@ export function openaiProvider(opts: { apiKey: string; model?: string; baseUrl?:
         max_tokens: maxTokens(),
         temperature: input.temperature ?? 0.3,
         messages: [{ role: "system", content: input.system }, ...toOpenAIMessages(input.messages)],
-        tools,
       };
+      // Omit `tools` entirely when empty: some OpenAI-compatible backends reject `tools: []`.
+      if (tools.length) body.tools = tools;
       if (input.forceTool) body.tool_choice = { type: "function", function: { name: input.forceTool } };
 
       const res = await fetchWithRetry(

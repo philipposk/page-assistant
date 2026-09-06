@@ -60,6 +60,38 @@ Scanned page text and `knowledgeUrl` content enter the system prompt. Mitigation
 
 `remember_fact` persists in the browser. Do not store secrets, tokens, or PCI data via memory capabilities.
 
+## Scaling: state is per-process (run one instance, or share state)
+
+The standalone `@page-assistant/server` keeps most of its safety and accounting state
+**in the memory of a single process**. It is **not** shared across replicas. If you run
+two or more instances behind a load balancer, each one enforces limits independently:
+
+| State | Where it lives | What breaks with N replicas |
+|-------|----------------|-----------------------------|
+| **Rate limiter** (per-IP) | in-memory, per process | Effective limit is up to N× your configured value — a caller spread across replicas gets N buckets |
+| **Usage meter** (`/v1/usage`, dashboard) | in-memory, per process | Each replica reports only its own slice; totals are fragmented |
+| **Daily budget** (`PA_DAILY_BUDGET`) | in-memory, per process | Real spend can reach N× the cap before any single replica trips it |
+| **Agent session memory** | in-memory, per process | A follow-up request routed to a different replica loses conversation context |
+| **Analytics counters** | in-memory, per process | Split across replicas |
+| **Ticket store (JSON file)** | shared file, **last-writer-wins** | Atomic rename prevents *torn* writes, but concurrent writers can still **lose** each other's updates |
+
+**Guidance — decide this before you scale out:**
+
+- **Simplest correct option: run exactly ONE instance.** All limits, budgets, and the
+  usage meter then mean what they say. Vertical scaling goes a long way for a proxy.
+- **If you must run multiple instances**, move the enforcement that has to be global
+  into a **shared layer**:
+  - **Rate limiting** → do it at the edge (Cloudflare / nginx `limit_req` / API gateway),
+    or back it with Redis, instead of relying on the in-process limiter.
+  - **Daily budget / usage** → track spend in a shared store (Redis, your DB), not the
+    in-memory meter.
+  - **Agent session memory** → use sticky sessions, or externalize the session store.
+  - **Tickets** → use a real datastore (DB) rather than the JSON file if writes are
+    concurrent and you cannot afford lost updates.
+
+The library ships the single-instance in-memory versions by design (zero infra to
+start). Scaling horizontally is a host responsibility.
+
 ## Reporting
 
 File security issues via GitHub private disclosure on [page-assistant](https://github.com/philipposk/page-assistant).

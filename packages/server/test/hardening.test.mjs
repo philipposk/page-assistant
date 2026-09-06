@@ -7,6 +7,7 @@ import { rateLimit } from "../dist/ratelimit.js";
 import { envInt, trustProxySetting } from "../dist/env.js";
 import { JsonFileTicketStore } from "../dist/ticketFileStore.js";
 import { UsageMeter, whisperFilename } from "../dist/index.js";
+import { isRetryableConnectionError } from "../dist/llm/fetchWithRetry.js";
 
 function fakeReqRes(ip = "1.2.3.4", headers = {}) {
   let statusCode = 200;
@@ -97,6 +98,48 @@ test("ticket store writes are atomic (valid JSON after each save)", () => {
   store.save({ app: "a", source: "s", kind: "other", summary: "two" });
   const parsed = JSON.parse(readFileSync(file, "utf8"));
   assert.equal(parsed.length, 2);
+});
+
+// ---- Lazy dir creation: constructing the store must NOT create dirs (minor). ----
+
+test("ticket store does NOT create its directory until the first write", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pa-tickets3-"));
+  const nested = path.join(dir, "sub", "deeper");
+  const file = path.join(nested, "tickets.json");
+  const store = new JsonFileTicketStore(file);
+  // Constructor alone must not have touched the filesystem.
+  assert.equal(existsSync(nested), false);
+  store.save({ app: "a", source: "s", kind: "other", summary: "first" });
+  assert.equal(existsSync(nested), true); // created lazily on first write
+});
+
+// ---- fetchWithRetry: retry ONLY on pre-response connection errors, never a timeout. ----
+
+test("isRetryableConnectionError retries connection failures but NOT timeouts", () => {
+  const conn = new Error("connect ECONNREFUSED 127.0.0.1:443");
+  conn.code = "ECONNREFUSED";
+  assert.equal(isRetryableConnectionError(conn), true);
+
+  const dns = new Error("getaddrinfo ENOTFOUND api.example.com");
+  dns.code = "ENOTFOUND";
+  assert.equal(isRetryableConnectionError(dns), true);
+
+  const hangup = new Error("socket hang up");
+  assert.equal(isRetryableConnectionError(hangup), true);
+
+  // A timeout (AbortError) must NOT be retried — the request may already be billing.
+  const abort = new Error("The operation was aborted");
+  abort.name = "AbortError";
+  assert.equal(isRetryableConnectionError(abort), false);
+
+  const timeout = new Error("timed out");
+  timeout.name = "TimeoutError";
+  assert.equal(isRetryableConnectionError(timeout), false);
+
+  // A wrapped (undici-style) cause is also inspected.
+  const wrapped = new Error("fetch failed");
+  wrapped.cause = Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" });
+  assert.equal(isRetryableConnectionError(wrapped), true);
 });
 
 // ---- Whisper filename hint (minor: Safari mp4). ----

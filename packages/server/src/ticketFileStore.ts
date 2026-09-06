@@ -14,8 +14,19 @@ const MAX_TICKETS = 5000;
  * on the next save.
  */
 export class JsonFileTicketStore implements TicketStore {
-  constructor(private filePath: string) {
-    mkdirSync(path.dirname(filePath), { recursive: true });
+  private dirEnsured = false;
+
+  constructor(private filePath: string) {}
+
+  /**
+   * Create the parent directory lazily — only right before the FIRST write. Doing it in the
+   * constructor meant merely importing/instantiating the server created a `./data` dir in the
+   * CWD at boot, even for deployments that never file-persist tickets. Idempotent.
+   */
+  private ensureDir(): void {
+    if (this.dirEnsured) return;
+    mkdirSync(path.dirname(this.filePath), { recursive: true });
+    this.dirEnsured = true;
   }
 
   private load(): Ticket[] {
@@ -51,6 +62,7 @@ export class JsonFileTicketStore implements TicketStore {
   }
 
   save(t: Ticket): void {
+    this.ensureDir();
     const all = this.load();
     all.push({ ...t, createdAt: t.createdAt ?? new Date().toISOString() });
     const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;

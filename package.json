@@ -4,6 +4,7 @@
   "private": true,
   "description": "Embeddable, grounded, voice-capable page assistant that can read any web app and perform real actions for the user.",
   "license": "MIT",
+  "engines": { "node": ">=20.6.0" },
   "workspaces": [
     "packages/core",
     "packages/widget",

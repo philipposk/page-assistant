@@ -138,9 +138,16 @@ async function loadConfig(path: string): Promise<Partial<ServerConfig>> {
     return JSON.parse(readFileSync(abs, "utf8"));
   }
   const mod = await import(pathToFileURL(abs).href);
-  const cfg = mod.default ?? mod.config ?? mod;
-  if (typeof cfg === "function") return await cfg();
-  return cfg;
+  // ESM default-export interop: `export default config` shows up as `mod.default`.
+  // Fall back to a named `config` export, then the module namespace itself.
+  let cfg = mod.default ?? mod.config ?? mod;
+  // A config module may itself default-export via a `{ default }` wrapper (some
+  // bundlers / JSON-module interop); unwrap one more level if that's all it is.
+  if (cfg && typeof cfg === "object" && "default" in cfg && Object.keys(cfg).length === 1) {
+    cfg = (cfg as { default: unknown }).default;
+  }
+  if (typeof cfg === "function") return await (cfg as () => Partial<ServerConfig>)();
+  return cfg as Partial<ServerConfig>;
 }
 
 async function serve() {
@@ -165,7 +172,7 @@ async function serve() {
     ...extra,
   });
 
-  server.listen(resolvedPort, () => {
+  const httpServer = server.listen(resolvedPort, () => {
     console.log(`[page-assistant] listening on http://localhost:${resolvedPort}`);
     console.log("  POST /v1/llm/complete  POST /v1/voice/tts  POST /v1/voice/stt  POST /v1/feedback");
     if (extra.capabilities?.length) {
@@ -176,6 +183,21 @@ async function serve() {
     if (!process.env.PA_AUTH_TOKEN) {
       console.log("  WARNING: PA_AUTH_TOKEN not set — spend endpoints are open (rate-limited only).");
     }
+  });
+
+  // Clean, actionable failure instead of an unhandled-error stack trace when the
+  // port is taken (the common case: another server — or a stray full-server.mjs —
+  // already bound it).
+  httpServer.on("error", (e: NodeJS.ErrnoException) => {
+    if (e.code === "EADDRINUSE") {
+      console.error(
+        `Port ${resolvedPort} is already in use. Stop the process using it, or pass a ` +
+          `free port (e.g. \`page-assistant serve 8788\` or PORT=8788).`
+      );
+    } else {
+      console.error(`Failed to start server: ${e.message}`);
+    }
+    process.exit(1);
   });
 }
 

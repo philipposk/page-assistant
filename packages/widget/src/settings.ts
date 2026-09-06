@@ -43,12 +43,17 @@ export const BROWSER_ONLY_CAPABILITIES: VoiceCapabilities = {
  */
 export async function fetchVoiceCapabilities(
   serverUrl: string | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  authToken?: string
 ): Promise<VoiceCapabilities> {
   if (!serverUrl || typeof fetch === "undefined") return BROWSER_ONLY_CAPABILITIES;
   const base = serverUrl.replace(/\/$/, "");
   try {
-    const res = await fetch(`${base}/v1/voice/capabilities`, { signal });
+    // The route is public, but send the bearer when we have one so it still works if a
+    // deployment guards it.
+    const headers: Record<string, string> = {};
+    if (authToken) headers.authorization = `Bearer ${authToken}`;
+    const res = await fetch(`${base}/v1/voice/capabilities`, { signal, headers });
     if (!res.ok) return BROWSER_ONLY_CAPABILITIES;
     const raw = (await res.json()) as Partial<VoiceCapabilities>;
     return {

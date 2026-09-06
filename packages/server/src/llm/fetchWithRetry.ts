@@ -1,13 +1,16 @@
 import { envInt } from "../env.js";
 
 /**
- * fetch() with a hard timeout and ONE retry on network/timeout errors only.
+ * fetch() with a hard timeout and ONE retry, but ONLY on a genuine pre-response CONNECTION
+ * failure (the request never reached the server).
  *
- * Why: a hung provider with no timeout pins a request for ~5 minutes, and in the
- * router's fallback chain that stacks across every provider. AbortSignal.timeout caps
- * each attempt. We retry ONCE on transport failures (DNS, reset, timeout) with a small
- * backoff — but NEVER on an HTTP response, so a 4xx (bad key, bad request) surfaces
- * immediately instead of being retried and re-billed.
+ * Why the narrow retry: every provider call here is a NON-idempotent POST that spends money.
+ * If the request already reached the provider and we time out waiting for the response, the
+ * provider may STILL be generating (and billing) — retrying would double-bill and could
+ * double-execute. So we retry ONLY when we're sure the server never got the request:
+ * connection refused / DNS failure / socket hang up before any response. A timeout
+ * (AbortError) is explicitly NOT retried, and neither is any HTTP response (a 4xx/5xx is a
+ * resolved Response, not a throw — it surfaces immediately).
  */
 export async function fetchWithRetry(
   url: string,
@@ -22,13 +25,41 @@ export async function fetchWithRetry(
       // Returns as soon as headers arrive; a 4xx/5xx is a resolved Response, not a throw.
       return await fetch(url, { ...init, signal: AbortSignal.timeout(opts.timeoutMs) });
     } catch (e) {
-      // Only transport-level failures (timeout / network) throw here — safe to retry.
       lastErr = e;
-      if (attempt < retries) await new Promise((r) => setTimeout(r, backoff * (attempt + 1)));
+      // Retry ONLY a genuine connection error, and only if we have attempts left. A timeout
+      // (the request may have landed and be billing) or any other error is surfaced as-is.
+      if (attempt < retries && isRetryableConnectionError(e)) {
+        await new Promise((r) => setTimeout(r, backoff * (attempt + 1)));
+        continue;
+      }
+      break;
     }
   }
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  throw new Error(`network error after ${retries + 1} attempt(s): ${reason}`);
+  throw new Error(`network error: ${reason}`);
+}
+
+/**
+ * True only for pre-response CONNECTION failures where the request never reached the server,
+ * so a retry cannot double-execute or double-bill: connection refused, DNS not found, or a
+ * socket hang up before any bytes of a response arrived.
+ *
+ * Deliberately EXCLUDES the timeout AbortError (`e.name === "AbortError"` /
+ * "TimeoutError"): once the request is in flight the provider may already be generating and
+ * billing, so we must NOT re-send it.
+ */
+export function isRetryableConnectionError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  // A timeout aborts the request — never retry it (it may have reached the provider).
+  if (e.name === "AbortError" || e.name === "TimeoutError") return false;
+  const code = (e as NodeJS.ErrnoException).code;
+  if (code && ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ECONNRESET", "EPIPE"].includes(code)) return true;
+  // Undici wraps the low-level cause; inspect it and the message for the same signals.
+  const cause = (e as { cause?: unknown }).cause;
+  const causeCode = cause instanceof Error ? (cause as NodeJS.ErrnoException).code : undefined;
+  if (causeCode && ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ECONNRESET", "EPIPE"].includes(causeCode)) return true;
+  const msg = `${e.message} ${cause instanceof Error ? cause.message : ""}`.toLowerCase();
+  return /econnrefused|enotfound|eai_again|socket hang up|econnreset|dns|getaddrinfo|network|failed to fetch/.test(msg);
 }
 
 export function llmTimeoutMs(): number {

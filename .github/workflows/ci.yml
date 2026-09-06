@@ -13,10 +13,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Using `npm install` rather than `npm ci`: workspace versions are bumped ahead
-      # of the committed lockfile, so `npm ci` would fail its integrity check. Switch
-      # to `npm ci` once package-lock.json is regenerated in sync.
-      - run: npm install
+      # Lockfile is in sync with the workspace versions, so use `npm ci` for a clean,
+      # reproducible install that fails fast on any drift.
+      - run: npm ci
       # Build before typecheck/test: composite project refs and dist/ outputs must exist.
       - run: npm run build
       - run: npm run typecheck

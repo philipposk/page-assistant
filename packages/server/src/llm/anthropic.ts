@@ -8,7 +8,7 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
   return {
     name: "anthropic",
     async complete(input: LLMCompletionInput): Promise<LLMCompletionOutput> {
-      const tools = input.tools.map((t) => ({
+      const tools = (input.tools ?? []).map((t) => ({
         name: t.name,
         description: t.description,
         input_schema: { type: "object", ...t.parameters },

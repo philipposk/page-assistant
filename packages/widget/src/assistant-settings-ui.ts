@@ -34,6 +34,8 @@ export interface AssistantSettingsUIOptions {
   title?: string;
   chatStore?: ChatHistoryStore;
   serverUrl?: string;
+  /** Bearer token forwarded to the capabilities probe if the deployment guards it. */
+  authToken?: string;
 }
 
 const TABS = ["General", "Voice", "Data"] as const;
@@ -84,7 +86,7 @@ export function mountAssistantSettingsPanel(
 
   // Ask the server what it can actually do; grey out options it can't back.
   const abort = new AbortController();
-  fetchVoiceCapabilities(opts.serverUrl, abort.signal).then((c) => {
+  fetchVoiceCapabilities(opts.serverUrl, abort.signal, opts.authToken).then((c) => {
     caps = c;
     if (activeTab === "Voice") render();
   });

@@ -4,6 +4,7 @@ import {
   Assistant,
   validateFactualText,
   validateArgs,
+  coerceArgTypes,
   InMemoryStore,
   makeTicketFloodGuard,
   MemoryTicketStore,
@@ -53,6 +54,98 @@ test("validator STILL kills a genuine invented ratio (9000/100)", () => {
   assert.equal(wasCorrected, true);
   assert.match(text, /72/);
   assert.doesNotMatch(text, /9000/);
+});
+
+// ---- Validator regression: unit-fused quantities & bare "year-looking" quantities
+//      must STAY validated (BLOCKER 1). The old whitelist auto-trusted them. ----
+
+test("validator CATCHES a unit-fused quantity no tool emitted (500g)", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Yield 72/100." }];
+  const { text, wasCorrected } = validateFactualText("You'll get 500g of flower.", inv);
+  assert.equal(wasCorrected, true);
+  assert.doesNotMatch(text, /500/);
+  assert.match(text, /72/);
+});
+
+test("validator CATCHES 1200mg when no tool emitted 1200", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Dose 50mg." }];
+  const { wasCorrected } = validateFactualText("Take 1200mg daily.", inv);
+  assert.equal(wasCorrected, true);
+});
+
+test("validator CATCHES '2000 units' (not treated as a bare year)", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Score 80/100." }];
+  const { wasCorrected } = validateFactualText("It produces 2000 units, scoring 80.", inv);
+  assert.equal(wasCorrected, true);
+});
+
+test("validator CATCHES '1950 grams' when no tool emitted 1950", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Score 80/100." }];
+  const { wasCorrected } = validateFactualText("The batch weighs 1950 grams, scoring 80.", inv);
+  assert.equal(wasCorrected, true);
+});
+
+test("validator PASSES a tool-rendered 500g (it's honest)", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Predicted 500g yield. Score 72/100." }];
+  const { wasCorrected } = validateFactualText("You'll get about 500g, score 72.", inv);
+  assert.equal(wasCorrected, false);
+});
+
+test("validator PASSES a real date 'in 2024' (date context whitelist)", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Score 80/100." }];
+  const { wasCorrected } = validateFactualText("Stabilized in 2024, scoring 80.", inv);
+  assert.equal(wasCorrected, false);
+});
+
+test("validator PASSES a month-name date 'January 2024'", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Score 80/100." }];
+  const { wasCorrected } = validateFactualText("Launched January 2024, scoring 80.", inv);
+  assert.equal(wasCorrected, false);
+});
+
+test("validator still whitelists ordinals and semantic versions", () => {
+  const inv = [{ name: "x", args: {}, ok: true, rendered: "Score 72/100." }];
+  assert.equal(validateFactualText("Ranked 5th using v2.11, score 72.", inv).wasCorrected, false);
+  assert.equal(validateFactualText("Built on 2.11.0, score 72.", inv).wasCorrected, false);
+});
+
+// ---- Numeric-string coercion for number/integer params (minor). ----
+
+test("coerceArgTypes converts a numeric string to a number for number params", () => {
+  const schema = { type: "object", properties: { n: { type: "number" }, s: { type: "string" } } };
+  const out = coerceArgTypes({ n: "5", s: "5" }, schema);
+  assert.strictEqual(out.n, 5); // number-typed → coerced
+  assert.strictEqual(out.s, "5"); // string-typed → untouched
+});
+
+test("coerceArgTypes truncates for integer params and leaves junk alone", () => {
+  const schema = { type: "object", properties: { i: { type: "integer" }, n: { type: "number" } } };
+  const out = coerceArgTypes({ i: "7.9", n: "abc" }, schema);
+  assert.strictEqual(out.i, 7);
+  assert.strictEqual(out.n, "abc"); // non-numeric string stays as-is
+});
+
+test("assistant coerces a numeric-string arg to a number before run()", async () => {
+  let received;
+  const cap = {
+    name: "add_one",
+    description: "Add one.",
+    parameters: { type: "object", properties: { n: { type: "number" } }, required: ["n"] },
+    run: (args) => {
+      received = args.n;
+      return { result: args.n + 1 };
+    },
+    render: (r) => `Result ${r.result}.`,
+  };
+  const llm = scriptedLLM([
+    { toolCalls: [{ id: "c1", name: "add_one", args: { n: "5" } }], text: "" },
+    { toolCalls: [], text: "Result 6." },
+  ]);
+  const a = new Assistant({ capabilities: [cap], llm, memory: new InMemoryStore() });
+  const res = await a.chat({ message: "add one to 5", page: { url: "x", path: "/" } });
+  assert.strictEqual(received, 5); // a number, not "5"
+  assert.equal(res.invocations[0].ok, true);
+  assert.strictEqual(res.invocations[0].result.result, 6); // 5 + 1, not "5" + 1 = "51"
 });
 
 // ---- Required-arg validation (fix #12). ----

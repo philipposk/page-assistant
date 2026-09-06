@@ -3,10 +3,11 @@
   "version": "0.4.0",
   "description": "CLI for page-assistant: health check, chat, serve proxy.",
   "license": "MIT",
+  "engines": { "node": ">=20.6.0" },
   "type": "module",
   "main": "./dist/index.js",
   "bin": { "page-assistant": "./dist/index.js" },
-  "files": ["dist"],
+  "files": ["dist", "LICENSE", "README.md"],
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/cli" },
   "scripts": {

@@ -12,6 +12,7 @@ export const THEME_VARS: Record<Exclude<ThemeMode, "system">, Record<string, str
     "--pa-text-muted": "#9ab4a6",
     "--pa-border": "#1f3a2c",
     "--pa-accent": "#16a34a",
+    "--pa-danger": "#f87171",
     "--pa-launcher-from": "#5eead4",
     "--pa-launcher-to": "#0d9488",
   },
@@ -25,7 +26,11 @@ export const THEME_VARS: Record<Exclude<ThemeMode, "system">, Record<string, str
     "--pa-text": "#0f172a",
     "--pa-text-muted": "#64748b",
     "--pa-border": "#e2e8f0",
-    "--pa-accent": "#059669",
+    // Darkened from #059669 (~3.75:1 white text) to hit WCAG AA (~4.5:1) on accent buttons
+    // (send / Confirm / Retry / "+ New chat").
+    "--pa-accent": "#047857",
+    // Darker red for the "Delete" menu item — #f87171 was ~2.2:1 on white (fails AA).
+    "--pa-danger": "#dc2626",
     "--pa-launcher-from": "#34d399",
     "--pa-launcher-to": "#059669",
   },

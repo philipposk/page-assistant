@@ -63,7 +63,7 @@ const SIDEBAR_CSS = `
   color: var(--pa-text); padding: 8px 14px; font-size: 13px; cursor: pointer;
 }
 .ctx-menu button:hover { background: var(--pa-border); }
-.ctx-menu button.danger { color: #f87171; }
+.ctx-menu button.danger { color: var(--pa-danger, #f87171); }
 .show-more {
   display: block; width: calc(100% - 16px); margin: 6px 8px; background: none; border: 1px dashed var(--pa-border);
   color: var(--pa-text-muted); border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer;
@@ -92,6 +92,7 @@ export class ChatSidebar {
   private listEl!: HTMLDivElement;
   private searchInput!: HTMLInputElement;
   private ctxMenu?: HTMLDivElement;
+  private ctxMenuAnchor?: HTMLElement;
   private showLimit = PAGE_SIZE;
   private query = "";
   private onHistoryChange = () => this.refresh();
@@ -236,6 +237,11 @@ export class ChatSidebar {
     menuBtn.setAttribute("aria-haspopup", "menu");
     menuBtn.onclick = (e) => {
       e.stopPropagation();
+      // Clicking the same ⋯ that opened the menu toggles it closed.
+      if (this.ctxMenu && this.ctxMenuAnchor === menuBtn) {
+        this.closeContextMenu();
+        return;
+      }
       this.openContextMenu(session, menuBtn);
     };
 
@@ -276,16 +282,36 @@ export class ChatSidebar {
       };
       menu.appendChild(btn);
     }
-    // Render INSIDE the shadow root (the sidebar element) so the .ctx-menu styles that
-    // live in the shadow tree actually apply — appending to document.body left it
-    // unstyled at the page bottom. position:fixed still positions it viewport-relative.
-    this.el.appendChild(menu);
+    // Render at the TOP of the shadow root — not inside the sidebar/panel-wrap. The
+    // panel-wrap gets a visualViewport `transform` on mobile, and a transformed ancestor
+    // makes position:fixed resolve against that ancestor (clipped/mispositioned) instead of
+    // the viewport. Appending to the shadow root escapes the transform; the .ctx-menu styles
+    // still apply because they live in the same shadow tree.
+    const root = this.el.getRootNode() as ShadowRoot | Document;
+    (root instanceof ShadowRoot ? root : this.el).appendChild(menu);
+    this.ctxMenu = menu;
+    this.ctxMenuAnchor = anchor;
+    // Measure the menu now that it's in the DOM so we can flip it above when it would
+    // overflow the bottom of the viewport (the old code clamped the TOP, which pushed a
+    // tall menu off-screen and made "Delete" unreachable).
     const rect = anchor.getBoundingClientRect();
     const width = 180;
-    menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 8)}px`;
-    menu.style.left = `${Math.min(rect.left, window.innerWidth - width)}px`;
-    this.ctxMenu = menu;
+    const menuH = menu.offsetHeight || 8 + items.length * 34;
+    const margin = 8;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    let top: number;
+    if (spaceBelow >= menuH + margin || rect.top < menuH + margin) {
+      // Enough room below, or not enough room above either → below, clamped to bottom edge.
+      top = Math.min(rect.bottom + 4, window.innerHeight - menuH - margin);
+    } else {
+      // Flip above the anchor.
+      top = Math.max(margin, rect.top - menuH - 4);
+    }
+    menu.style.top = `${Math.max(margin, top)}px`;
+    menu.style.left = `${Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin))}px`;
     this.outsideClickHandler = (e: Event) => {
+      // Ignore the click on the anchor that toggles the menu (its own handler manages that).
+      if (this.ctxMenuAnchor && (e.target === this.ctxMenuAnchor || this.ctxMenuAnchor.contains(e.target as Node))) return;
       if (this.ctxMenu && !this.ctxMenu.contains(e.target as Node)) this.closeContextMenu();
     };
     setTimeout(() => {
@@ -298,11 +324,19 @@ export class ChatSidebar {
   private closeContextMenu() {
     this.ctxMenu?.remove();
     this.ctxMenu = undefined;
+    this.ctxMenuAnchor = undefined;
     if (this.outsideClickHandler) {
       this.el?.getRootNode().removeEventListener("click", this.outsideClickHandler, { capture: true });
       document.removeEventListener("click", this.outsideClickHandler, { capture: true });
       this.outsideClickHandler = undefined;
     }
+  }
+
+  /** Close the context menu if it's open; returns true if there was one to close (for Escape). */
+  closeContextMenuIfOpen(): boolean {
+    if (!this.ctxMenu) return false;
+    this.closeContextMenu();
+    return true;
   }
 
   private promptRename(session: ChatSession) {

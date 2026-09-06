@@ -147,6 +147,11 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
 - [ ] CORS restricted to your origin (standalone server)
 - [ ] `ELEVENLABS_API_KEY` / `OPENAI_API_KEY` only on server
 - [ ] Test: ask assistant to do something it shouldn't — it must refuse or ask to confirm
+- [ ] **Running more than one instance?** The standalone server's rate limiter, usage
+      meter, daily budget, agent session memory, and analytics are **per-process
+      in-memory**, and the JSON ticket file is last-writer-wins. Run **one** instance, or
+      move that state into a shared layer (edge/Redis) — see the "Scaling" section in
+      [SECURITY.md](./SECURITY.md).
 
 ## What you get for free
 

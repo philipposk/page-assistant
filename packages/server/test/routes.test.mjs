@@ -6,6 +6,10 @@ import { createServer } from "../dist/server.js";
 let base;
 let httpServer;
 
+// Capture the last input the provider saw, so we can prove the route reaches the provider
+// (no TypeError) even when the caller omits `tools`.
+let lastComplete;
+
 before(async () => {
   const app = createServer({
     capabilities: [
@@ -17,11 +21,14 @@ before(async () => {
         render: (r) => `echo: ${r.v}`,
       },
     ],
-    // Scripted LLM so no network / keys are needed.
+    // Scripted LLM so no network / keys are needed. Mimics a real provider that maps
+    // input.tools — so if the route passed tools:undefined this would throw a TypeError.
     llm: {
       name: "test",
-      async complete() {
-        return { toolCalls: [], text: "hello", usage: { promptTokens: 3, completionTokens: 1 }, provider: "test" };
+      async complete(input) {
+        lastComplete = input;
+        const tools = (input.tools ?? []).map((t) => t.name); // would throw if undefined & no default
+        return { toolCalls: [], text: "hello", tools, usage: { promptTokens: 3, completionTokens: 1 }, provider: "test" };
       },
     },
   });
@@ -48,6 +55,62 @@ test("GET /v1/voice/capabilities reflects configured keys", async () => {
   assert.ok("tts" in j && "stt" in j);
   assert.equal(typeof j.tts.server, "boolean");
   assert.ok(Array.isArray(j.tts.providers));
+});
+
+test("GET /v1/voice/capabilities is PUBLIC even when an auth token is set", async () => {
+  // Boot a second app WITH auth on; capabilities must still be reachable without a bearer,
+  // while a spend endpoint (models) is guarded — proving the guard was removed for caps only.
+  process.env.PA_AUTH_TOKEN = "secret-token";
+  const guarded = createServer({});
+  const srv = await new Promise((resolve) => {
+    const s = guarded.listen(0, () => resolve(s));
+  });
+  const gbase = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const caps = await fetch(`${gbase}/v1/voice/capabilities`);
+    assert.equal(caps.status, 200); // no bearer, still OK
+    const models = await fetch(`${gbase}/v1/models`);
+    assert.equal(models.status, 401); // guarded endpoint rejects without bearer
+  } finally {
+    srv.close();
+    delete process.env.PA_AUTH_TOKEN;
+  }
+});
+
+test("POST /v1/llm/complete with NO tools reaches the provider (no TypeError)", async () => {
+  const r = await fetch(`${base}/v1/llm/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }), // no `tools`
+  });
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.text, "hello");
+  // Provider saw a real (defaulted) array, not undefined.
+  assert.ok(Array.isArray(lastComplete.tools));
+});
+
+test("POST /v1/llm/complete with a malformed body returns 400 (not 502)", async () => {
+  const noMessages = await fetch(`${base}/v1/llm/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tools: [] }), // messages missing
+  });
+  assert.equal(noMessages.status, 400);
+
+  const badMessages = await fetch(`${base}/v1/llm/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messages: "not-an-array" }),
+  });
+  assert.equal(badMessages.status, 400);
+
+  const badTools = await fetch(`${base}/v1/llm/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ messages: [], tools: "nope" }),
+  });
+  assert.equal(badTools.status, 400);
 });
 
 test("POST /v1/analytics clamps hostile meta (drops nested, caps keys)", async () => {

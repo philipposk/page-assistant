@@ -71,9 +71,11 @@ function handleError(res: Response, e: unknown, route: string, reqId: string): v
   // is OUR config problem, not the caller's, and the raw provider text must not leak.
   const status = 502;
   if (e instanceof HttpProviderError) {
-    log("error", { reqId, route, msg: e.message, errType: "HttpProviderError", provider: e.provider, providerStatus: e.status, detail: e.detail.slice(0, 500) });
+    log("error", { reqId, route, msg: e.message, errType: "HttpProviderError", provider: e.provider, providerStatus: e.status, detail: e.detail.slice(0, 500), stack: e.stack });
   } else {
-    log("error", { reqId, route, msg: e instanceof Error ? e.message : String(e), errType: e instanceof Error ? e.name : "Error" });
+    // Include the stack server-side only (never in the client response) so an unexpected
+    // failure is actually diagnosable from logs instead of a bare one-line message.
+    log("error", { reqId, route, msg: e instanceof Error ? e.message : String(e), errType: e instanceof Error ? e.name : "Error", stack: e instanceof Error ? e.stack : undefined });
   }
   res.status(status).json({ error: genericError(status) });
 }
@@ -142,8 +144,17 @@ export function createServer(config: ServerConfig = {}): Express {
   // --- LLM proxy: one tool-calling round. The widget's grounding loop drives this. ---
   app.post("/v1/llm/complete", guard, llmLimit, budgetGate, async (req, res) => {
     try {
-      const { model, ...rest } = req.body ?? {};
-      const out = await llm.complete({ ...rest, model });
+      const { model, messages, tools, ...rest } = req.body ?? {};
+      // Validate the caller's body BEFORE handing it to a provider. A missing/invalid
+      // `messages` is the CALLER's mistake → 400, not a misleading 502 that reads as "the
+      // AI provider is down". `tools` is optional; default it so providers never map undefined.
+      if (!Array.isArray(messages)) {
+        return res.status(400).json({ error: "`messages` must be an array." });
+      }
+      if (tools !== undefined && !Array.isArray(tools)) {
+        return res.status(400).json({ error: "`tools` must be an array when provided." });
+      }
+      const out = await llm.complete({ ...rest, model, messages, tools: tools ?? [] });
       usage.record({ usage: out.usage, provider: out.provider });
       res.json(out);
     } catch (e) {
@@ -179,7 +190,11 @@ export function createServer(config: ServerConfig = {}): Express {
   });
 
   // --- Voice capabilities: lets the settings UI grey out unconfigured options. ---
-  app.get("/v1/voice/capabilities", guard, (_req, res) => {
+  // PUBLIC (no bearer guard): it returns only booleans about which provider keys exist —
+  // no secrets, no spend — so the widget's settings UI can query it before the user has a
+  // token. Still rate-limited to keep it from being a free unauthenticated ping flood.
+  const capsLimit = rateLimit({ windowMs: 60_000, max: envInt("PA_RATE_ANALYTICS", 60), name: "voice-caps" });
+  app.get("/v1/voice/capabilities", capsLimit, (_req, res) => {
     const providers: string[] = [];
     if (process.env.ELEVENLABS_API_KEY) providers.push("elevenlabs");
     if (process.env.OPENAI_API_KEY) providers.push("openai");
@@ -225,18 +240,30 @@ export function createServer(config: ServerConfig = {}): Express {
   if (config.capabilities?.length) {
     // Per-caller memory isolation: one shared store would leak one caller's remembered
     // facts into every other caller's prompt. Each caller/session id gets its own store.
+    // NOTE: the session key is CLIENT-SUPPLIED (session/source/IP). This is a coarse
+    // isolation gate to stop accidental cross-talk between callers — it is NOT tenant auth.
+    // A caller that knows/guesses another caller's session id could address the same store,
+    // so do not treat this as a security boundary; put real auth in front for that.
     const memories = new Map<string, MemoryStore>();
+    const maxSessions = () => envInt("PA_MAX_SESSIONS", 1000, { min: 1 });
     const memoryFor = (key: string): MemoryStore => {
-      let m = memories.get(key);
-      if (!m) {
-        m = new InMemoryStore();
-        // Bound the number of distinct sessions we keep memory for (simple LRU-ish evict).
-        if (memories.size >= envInt("PA_MAX_SESSIONS", 1000, { min: 1 })) {
-          const oldest = memories.keys().next().value;
-          if (oldest !== undefined) memories.delete(oldest);
-        }
-        memories.set(key, m);
+      const existing = memories.get(key);
+      if (existing) {
+        // LRU: touch on access so a busy session isn't evicted just for being created early.
+        // Map preserves insertion order, so delete+re-set moves this key to the newest slot.
+        memories.delete(key);
+        memories.set(key, existing);
+        return existing;
       }
+      const m = new InMemoryStore();
+      // Bound the number of distinct sessions we keep memory for; evict the LEAST recently
+      // used (front of the Map) once we're at the cap.
+      while (memories.size >= maxSessions()) {
+        const oldest = memories.keys().next().value;
+        if (oldest === undefined) break;
+        memories.delete(oldest);
+      }
+      memories.set(key, m);
       return m;
     };
     const makeAssistant = (memory: MemoryStore) =>

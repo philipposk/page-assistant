@@ -37,6 +37,8 @@ export interface ListenHooks {
   onCountdown?: (msRemaining: number, totalMs: number) => void;
   /** Fired once when capture actually starts. */
   onCaptureStart?: () => void;
+  /** Fired once when server STT is unavailable and we transparently fall back to the browser. */
+  onServerFallback?: () => void;
 }
 
 const SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
@@ -160,15 +162,43 @@ export class Voice {
 
   // ---- Barge-in: real voice-activity detection ------------------------------
 
-  /** Start listening on the mic and stop TTS the moment the user actually speaks. */
+  /**
+   * Start barge-in — BUT never open the mic just to speak. Opening getUserMedia on every
+   * TTS reply prompted TTS-only users for mic access, lit the mic indicator during all
+   * speech, and let speaker echo trip the RMS threshold (the assistant barged in on
+   * itself). So we only run barge-in when the mic is already available:
+   *   - a live listen stream already exists (reuse it), or
+   *   - mic permission was ALREADY granted (Permissions API says "granted").
+   * Otherwise barge-in is silently skipped; tapping the mic button still interrupts TTS.
+   */
   private startBargeIn() {
     this.stopBargeIn();
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
     if (this.opts.vad === "silero") {
-      this.startSileroBargeIn();
+      // Silero manages its own mic; gate it behind an already-granted permission too so it
+      // doesn't surprise-prompt TTS-only users.
+      this.ifMicAlreadyGranted(() => this.startSileroBargeIn());
       return;
     }
-    this.startAnalyserBargeIn();
+    this.ifMicAlreadyGranted(() => this.startAnalyserBargeIn());
+  }
+
+  /** Run `fn` only if the mic is already usable without a new permission prompt. */
+  private ifMicAlreadyGranted(fn: () => void) {
+    const perms = (navigator as any).permissions;
+    if (!perms?.query) {
+      // No Permissions API (Safari, older browsers): can't tell without prompting, so
+      // skip barge-in rather than risk a surprise mic prompt. Mic-tap still interrupts.
+      return;
+    }
+    perms
+      .query({ name: "microphone" as PermissionName })
+      .then((status: PermissionStatus) => {
+        if (status.state === "granted") fn();
+      })
+      .catch(() => {
+        /* query unsupported for "microphone" — skip barge-in silently */
+      });
   }
 
   private startAnalyserBargeIn() {
@@ -184,7 +214,9 @@ export class Voice {
     };
     this.bargeCleanup = cleanup;
     navigator.mediaDevices
-      .getUserMedia({ audio: true })
+      // Echo cancellation + noise suppression so the speaker output doesn't feed back into
+      // the analyser and trip barge-in on the assistant's own voice.
+      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } as MediaTrackConstraints })
       .then((s) => {
         if (cancelled) {
           s.getTracks().forEach((t) => t.stop());
@@ -209,9 +241,10 @@ export class Voice {
             sum += v * v;
           }
           const rms = Math.sqrt(sum / buf.length);
-          if (rms > 0.05) {
-            // require a few consecutive voiced frames so a click/thump doesn't trigger
-            if (++voicedFrames >= 3) {
+          // Higher threshold + more sustained voiced frames so residual speaker echo (past
+          // echo cancellation) and brief thumps don't self-interrupt.
+          if (rms > 0.09) {
+            if (++voicedFrames >= 6) {
               this.stop(); // user is talking — cut the assistant off (barge-in)
               return;
             }
@@ -223,7 +256,7 @@ export class Voice {
         raf = requestAnimationFrame(tick);
       })
       .catch(() => {
-        /* no mic permission — barge-in via VAD unavailable; mic-tap still stops TTS */
+        /* mic became unavailable — barge-in via VAD unavailable; mic-tap still stops TTS */
       });
   }
 
@@ -285,11 +318,31 @@ export class Voice {
   async listenOnce(hooks?: ListenHooks): Promise<string> {
     this.stop(); // barge-in
     if (this.opts.sttMode === "server" && this.opts.serverUrl) {
-      return this.listenServer(hooks);
+      try {
+        return await this.listenServer(hooks);
+      } catch (e) {
+        // A saved "server STT" preference against a server that has no Whisper key made
+        // every mic tap throw VoiceError("other") → the user saw "I couldn't access the
+        // microphone." If the failure is server-side (not a mic/permission/no-speech
+        // problem), transparently fall back to the free browser recognizer with a notice.
+        if (e instanceof VoiceError && e.reason === "other") {
+          const SRfb = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+          if (SRfb) {
+            hooks?.onServerFallback?.();
+            return this.listenBrowser(SRfb);
+          }
+        }
+        throw e;
+      }
     }
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SR) {
-      return new Promise((resolve, reject) => {
+    if (SR) return this.listenBrowser(SR);
+    return this.listenServer(hooks);
+  }
+
+  /** Browser SpeechRecognition path (free, instant). Extracted so server STT can fall back to it. */
+  private listenBrowser(SR: any): Promise<string> {
+    return new Promise((resolve, reject) => {
         const r = new SR();
         this.activeRecognition = r;
         r.lang = "en-US";
@@ -353,8 +406,6 @@ export class Voice {
           fail("other");
         }
       });
-    }
-    return this.listenServer(hooks);
   }
 
   /** Cancel an in-flight listen (second mic tap). Resolves the pending listenOnce with "". */

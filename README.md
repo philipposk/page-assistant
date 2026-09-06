@@ -139,6 +139,42 @@ session.)
 - **Host override:** `onSettings` replaces the built-in modal; `settingsPageUrl` adds a link to your app settings page.
 - **Barge-in:** talking over the assistant stops it instantly.
 
+## Deploying the server
+
+The standalone `@page-assistant/server` is a small Node/Express proxy. A [`Dockerfile`](./Dockerfile)
+is included — `node:22-alpine`, multi-stage (build → runtime), runs as a non-root user:
+
+```bash
+docker build -t page-assistant .
+docker run -p 8787:8787 \
+  -e OPENAI_API_KEY=sk-...          # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+  -e PA_AUTH_TOKEN=long-random \    # protect spend + agent routes
+  -e PA_CORS_ORIGIN=https://yourapp.com \
+  page-assistant
+```
+
+- **Port / env.** The server binds `PORT` (default `8787`) on all interfaces. All keys
+  and tuning are env vars: LLM key, `PA_AUTH_TOKEN`, `PA_CORS_ORIGIN`, `PA_RATE_*`,
+  `PA_DAILY_BUDGET`, `PA_TICKETS_FILE`. See [`.env.example`](./.env.example) and
+  [SECURITY.md](./SECURITY.md).
+- **Harden before exposing it.** Set **`PA_AUTH_TOKEN`** (bearer on spend + agent
+  routes) and **`PA_CORS_ORIGIN`** to your real origin — the default `*` CORS and
+  open (rate-limited-only) endpoints are for local dev, not production.
+- **Run ONE instance** unless you move shared state out. The rate limiter, usage meter,
+  daily budget, agent session memory, and analytics are **per-process in-memory**, and
+  the JSON ticket file is last-writer-wins across replicas. Scaling horizontally without
+  a shared limiter/store silently multiplies your limits and budget — see the
+  [Scaling section in SECURITY.md](./SECURITY.md).
+- **Graceful shutdown (SIGTERM).** The server bin handles `SIGTERM`/`SIGINT`: it stops
+  accepting new connections and lets in-flight requests drain (force-exit after a 10s
+  grace window), so a stop/redeploy doesn't cut active chats mid-response. Give the
+  orchestrator at least ~10s of termination grace. Persisted tickets are also written
+  atomically (temp file + rename), so a shutdown mid-write can't corrupt the ticket file.
+- **The Docker image runs the plain proxy** (no `/v1/agent`, no `llm.txt`). To serve
+  capabilities, run `page-assistant serve --config <your-config>` or import
+  `createServer({ capabilities, llmTxt })` in your own entrypoint (see
+  [`examples/full-server.mjs`](./examples/full-server.mjs)).
+
 ## Packages
 
 | Package | What |

@@ -28,7 +28,10 @@ jobs:
       # prepublishOnly (npm run build) as a safety net at publish time.
       - run: npm run build
       - run: npm run typecheck
+      # Gate the publish on the full test suite, not just core: run core tests
+      # (npm test) AND the server tests before any package leaves the machine.
       - run: npm test
+      - run: node --test packages/server/test/*.test.mjs
 
       # Publish in dependency order: core first, then everything that depends on it.
       # --workspace targets the package; publishes are idempotent-safe (a version that

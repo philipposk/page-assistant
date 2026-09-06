@@ -229,7 +229,7 @@ export class Assistant {
     page: PageContext,
     caller: "user" | "agent"
   ): Promise<ToolInvocation> {
-    const args = stripUnknownKeys(rawArgs, cap.parameters);
+    const args = coerceArgTypes(stripUnknownKeys(rawArgs, cap.parameters), cap.parameters);
     try {
       const result = await cap.run(args, { page, memory: this.opts.memory, caller });
       return {
@@ -243,6 +243,31 @@ export class Assistant {
       return { name: cap.name, args, ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
+}
+
+/**
+ * Coerce numeric strings to numbers for number/integer-typed params BEFORE run(). Models
+ * often stringify numbers ("5"); validateArgs already ACCEPTS a numeric string, but without
+ * this the host function would receive "5" (a string) and e.g. "5" * 2 or comparisons break.
+ * Only touches params the schema types as number/integer and whose value is a clean numeric
+ * string; everything else passes through untouched.
+ */
+export function coerceArgTypes(
+  args: Record<string, unknown>,
+  schema: JSONSchema
+): Record<string, unknown> {
+  const props = schema.properties;
+  if (!props) return args;
+  const out: Record<string, unknown> = { ...args };
+  for (const [k, spec] of Object.entries(props)) {
+    const want = (spec as JSONSchema).type;
+    const v = out[k];
+    if ((want === "number" || want === "integer") && typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+      const num = Number(v);
+      out[k] = want === "integer" ? Math.trunc(num) : num;
+    }
+  }
+  return out;
 }
 
 /** Drop keys the schema didn't declare — mirrors strive's additionalProperties:false hardening. */
@@ -367,38 +392,55 @@ export function validateFactualText(
 /**
  * Numbers a factual validator must NOT flag even when no tool returned them, because
  * they aren't quantitative claims about tool output:
- *  - 4-digit years (1900–2099): "released in 2026"
  *  - ordinals: "top 10", "5th place" (trailing st/nd/rd/th)
- *  - version-like tokens: "v2.1", "3.11", "ES2022"
+ *  - version-like tokens: "v2.1", "2.11.0"
  *  - numbers embedded in URLs / ids / hyphenated tokens: "gpt-4o", "/v1/x", "SKU-9000"
+ *  - 4-digit years, but ONLY in an explicit date context ("in 2024", "since 2020",
+ *    "January 2024"). A bare "2000 units" is a quantity, not a year — it stays validated.
+ *
+ * Deliberately NOT whitelisted: a unit-fused quantity like "500g", "1200mg", "120ms",
+ * "1950 grams", "2000 units". Those ARE factual claims about tool output and must be
+ * checked against what the tools actually returned.
  */
 function isWhitelisted(n: string, structural: Set<string>): boolean {
-  if (structural.has(n)) return true;
-  const num = Number(n);
-  if (Number.isInteger(num) && num >= 1900 && num <= 2099 && /^\d{4}$/.test(n)) return true; // year
-  return false;
+  return structural.has(n);
 }
 
 const ORDINAL_RE = /\b\d+(?:st|nd|rd|th)\b/gi;
-const VERSION_RE = /\bv\d+(?:\.\d+)+\b/gi; // v2.1, v3.11.0 (leading v — a bare "9.5" is still a claim)
+// v2.1 / v3.11.0 (leading v) OR a dotted semantic version 2.11.0 (two+ dots so a bare
+// "9.5" ratio is still a claim). A single-dot "2.11" is only whitelisted with the v prefix.
+const VERSION_RE = /\bv\d+(?:\.\d+)+\b|\b\d+\.\d+\.\d+\b/gi;
 const URL_RE = /\bhttps?:\/\/\S+/gi;
 // "top 10", "first 5", "page 12", "#7" — a number qualified by a list/position word is a
 // reference, not a claim about tool output.
 const COUNT_CONTEXT_RE = /\b(?:top|first|last|next|page|chapter|step|no|number)\s+(\d+)\b|#(\d+)\b/gi;
-// A number fused to LETTERS is part of an identifier/model/token ("gpt-4o", "ISO-8601",
-// "ES2022", "s3"), not a quantitative claim. A number joined only to other numbers by a
-// slash ("9000/100") is a ratio the model may have invented — do NOT whitelist that.
-const TOKEN_NUM_RE = /\b(?:[A-Za-z][\w./-]*\d[\w./-]*|\d[\w./-]*[A-Za-z][\w./-]*)\b/g;
+// A number fused to LETTERS with a URL/id-like separator (dot, slash, hyphen, underscore)
+// is part of an identifier/model/token ("gpt-4o", "ISO-8601", "s3", "/v1/x"), not a
+// quantitative claim. A UNIT-fused quantity ("500g", "1200mg", "120ms") is a claim about
+// tool output, so it must NOT match here — the separator requirement excludes bare
+// digit+letter runs. A number joined only to other numbers by a slash ("9000/100") is a
+// ratio the model may have invented and is likewise NOT whitelisted.
+const TOKEN_NUM_RE = /\b(?:[A-Za-z][\w]*[./_-][\w./_-]*\d[\w./_-]*|\d[\w]*[./_-][\w./_-]*[A-Za-z][\w./_-]*|[A-Za-z]+[./_-]+\d[\w./_-]*)\b/g;
+// A 4-digit year is only a non-claim in explicit date context: preceded by a date word
+// ("in/year/since/by/during/from/until") or a month name, or part of a written date.
+const YEAR_CONTEXT_RE =
+  /\b(?:in|year|since|by|during|from|until|by the year|circa|©)\s+((?:19|20)\d{2})\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:\d{1,2},?\s+)?((?:19|20)\d{2})\b|\b\d{1,2}[/-]\d{1,2}[/-]((?:19|20)\d{2})\b|\b((?:19|20)\d{2})[/-]\d{1,2}[/-]\d{1,2}\b/gi;
 
 function collectStructuralNumbers(text: string): Set<string> {
   const set = new Set<string>();
   const add = (s: string) => {
     for (const n of s.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) set.add(n);
   };
+  const addExact = (s: string) => {
+    if (s) set.add(s);
+  };
   for (const m of text.match(ORDINAL_RE) ?? []) add(m);
   for (const m of text.match(VERSION_RE) ?? []) add(m);
   for (const m of text.match(URL_RE) ?? []) add(m);
   for (const m of text.match(TOKEN_NUM_RE) ?? []) add(m);
   for (const m of text.matchAll(COUNT_CONTEXT_RE)) add(m[1] ?? m[2] ?? "");
+  // Years: whitelist only the year digits captured in a date context, exactly (not a
+  // substring pass that would also swallow "2000" from "2000 units").
+  for (const m of text.matchAll(YEAR_CONTEXT_RE)) addExact(m[1] ?? m[2] ?? m[3] ?? m[4] ?? "");
   return set;
 }

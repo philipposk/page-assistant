@@ -18,6 +18,7 @@
 // You can also feed this file to the CLI's serve command:
 //   node packages/cli/dist/index.js serve --config ./examples/full-server.mjs
 
+import { pathToFileURL } from "node:url";
 import { createServer, JsonFileTicketStore } from "@page-assistant/server";
 
 const APP_URL = process.env.PA_APP_URL ?? "http://localhost:8787";
@@ -64,19 +65,31 @@ const llmTxt = {
   agentEndpoint: `${APP_URL}/v1/agent`,
 };
 
-const port = Number(process.env.PORT ?? 8787);
-
-createServer({
+// The config object. Exported as the default so `page-assistant serve --config
+// ./examples/full-server.mjs` can import it and mount /v1/agent + /llm.txt on the
+// CLI's server WITHOUT this file starting a second server on the same port.
+const config = {
   corsOrigin: process.env.PA_CORS_ORIGIN ?? "*",
   ticketStore: new JsonFileTicketStore(process.env.PA_TICKETS_FILE ?? "./data/tickets.json"),
   appName: "Acme Strains",
   capabilities,
   llmTxt,
-}).listen(port, () => {
-  console.log(`[full-server] listening on http://localhost:${port}`);
-  console.log("  POST /v1/agent  GET /llm.txt  GET /.well-known/llm-actions.json  (mounted — capabilities present)");
-  console.log("  POST /v1/llm/complete  POST /v1/voice/tts  POST /v1/voice/stt  POST /v1/feedback");
-  if (!process.env.PA_AUTH_TOKEN) {
-    console.log("  WARNING: PA_AUTH_TOKEN not set — spend + agent endpoints are open (rate-limited only).");
-  }
-});
+};
+
+export default config;
+export { capabilities, llmTxt };
+
+// Only boot a standalone server when this file is run DIRECTLY (`node
+// examples/full-server.mjs`) — never on import (that would race the CLI onto the same
+// port and crash with EADDRINUSE).
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const port = Number(process.env.PORT ?? 8787);
+  createServer(config).listen(port, () => {
+    console.log(`[full-server] listening on http://localhost:${port}`);
+    console.log("  POST /v1/agent  GET /llm.txt  GET /.well-known/llm-actions.json  (mounted — capabilities present)");
+    console.log("  POST /v1/llm/complete  POST /v1/voice/tts  POST /v1/voice/stt  POST /v1/feedback");
+    if (!process.env.PA_AUTH_TOKEN) {
+      console.log("  WARNING: PA_AUTH_TOKEN not set — spend + agent endpoints are open (rate-limited only).");
+    }
+  });
+}
