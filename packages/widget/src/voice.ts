@@ -2,7 +2,20 @@
 // backend for higher-quality ElevenLabs TTS / Whisper STT. Supports barge-in (speaking
 // stops the moment the user actually talks — real RMS voice-activity detection).
 
-export type VoiceErrorReason = "no-speech" | "not-allowed" | "no-mic" | "other";
+export type VoiceErrorReason =
+  | "no-speech"
+  | "not-allowed"
+  /** No microphone device. */
+  | "no-mic"
+  /**
+   * The speech SERVICE failed, as distinct from the microphone being refused: the
+   * recogniser's network backend is unreachable, or the engine itself is unavailable
+   * ("service-not-allowed"). This is the everyday iOS symptom — webkitSpeechRecognition
+   * exists inside an installed PWA / WKWebView but does not work — and it is the one
+   * failure worth retrying through server STT, because the mic itself is fine.
+   */
+  | "service"
+  | "other";
 
 export class VoiceError extends Error {
   constructor(public reason: VoiceErrorReason, message?: string) {
@@ -55,6 +68,8 @@ export interface ListenHooks {
   onCaptureStart?: () => void;
   /** Fired once when server STT is unavailable and we transparently fall back to the browser. */
   onServerFallback?: () => void;
+  /** Fired once when the browser recogniser is unusable and we fall back to server STT. */
+  onBrowserFallback?: () => void;
 }
 
 const SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
@@ -428,8 +443,40 @@ export class Voice {
       }
     }
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SR) return this.listenBrowser(SR);
-    return this.listenServer(hooks);
+    if (SR) {
+      try {
+        return await this.listenBrowser(SR);
+      } catch (e) {
+        // The reverse fallback, and the one that matters on iOS: webkitSpeechRecognition
+        // is present inside an installed PWA / WKWebView but its service does not work,
+        // so it fails with a network/service error while the mic is perfectly fine.
+        // Retry ONCE through server STT. Never on "not-allowed" (mic refused — the server
+        // path needs the same permission and would fail identically) and never on
+        // "no-speech" (the user simply said nothing).
+        if (e instanceof VoiceError && (e.reason === "service" || e.reason === "other") && this.canServerStt()) {
+          hooks?.onBrowserFallback?.();
+          return this.listenServer(hooks); // single retry — listenServer never re-enters here
+        }
+        throw e;
+      }
+    }
+    // No recogniser at all (Firefox, some WKWebViews). Server STT is the only path.
+    if (this.canServerStt()) {
+      hooks?.onBrowserFallback?.();
+      return this.listenServer(hooks);
+    }
+    // Nothing can transcribe. Fail loudly — a silent "" here is the original bug.
+    throw new VoiceError("service");
+  }
+
+  /** True when recorded audio can actually be sent somewhere for transcription. */
+  private canServerStt(): boolean {
+    return (
+      !!this.opts.serverUrl &&
+      typeof navigator !== "undefined" &&
+      !!navigator.mediaDevices?.getUserMedia &&
+      typeof (window as any).MediaRecorder !== "undefined"
+    );
   }
 
   /** Browser SpeechRecognition path (free, instant). Extracted so server STT can fall back to it. */
@@ -460,9 +507,20 @@ export class Voice {
         r.onerror = (e: any) => {
           // "aborted" is our own cancel() — resolve empty, no error surfaced.
           if (e?.error === "aborted") return finish("");
-          if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
+          if (e?.error === "not-allowed") {
+            // The USER refused the mic. Server STT needs the same permission, so this is
+            // never worth retrying — say so instead.
             gotError = "not-allowed";
             return fail("not-allowed");
+          }
+          if (
+            e?.error === "service-not-allowed" ||
+            e?.error === "network" ||
+            e?.error === "language-not-supported"
+          ) {
+            // The recogniser SERVICE failed, not the microphone. Retryable via the server.
+            gotError = "service";
+            return fail("service");
           }
           if (e?.error === "no-speech") {
             gotError = "no-speech";
@@ -475,6 +533,7 @@ export class Voice {
         r.onend = () => {
           if (settled) return;
           if (gotError === "no-speech" || gotError === null) return fail("no-speech");
+          if (gotError === "service") return fail("service");
           if (gotError === "other") return fail("other");
           finish("");
         };
@@ -515,7 +574,9 @@ export class Voice {
   }
 
   private async listenServer(hooks?: ListenHooks): Promise<string> {
-    if (!this.opts.serverUrl) return "";
+    // Never resolve "" here: an empty resolve is invisible to the caller and was exactly
+    // how a mic tap ended in no transcript, no error and no message.
+    if (!this.opts.serverUrl) throw new VoiceError("service");
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });

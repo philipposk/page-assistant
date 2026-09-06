@@ -54,6 +54,7 @@ export interface WidgetStrings {
   voiceNoMic: string;
   voiceError: string;
   voiceServerFallback: string;
+  voiceBrowserFallback: string;
 }
 
 export const DEFAULT_STRINGS: WidgetStrings = {
@@ -94,6 +95,7 @@ export const DEFAULT_STRINGS: WidgetStrings = {
   voiceNoMic: "No microphone was found.",
   voiceError: "I couldn't access the microphone.",
   voiceServerFallback: "Server voice isn't available here — using your browser's microphone instead.",
+  voiceBrowserFallback: "Your browser's speech recognition isn't working here — using server transcription instead.",
 };
 
 /** Merge host overrides over the English defaults. Empty/blank overrides are ignored. */

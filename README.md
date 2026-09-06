@@ -140,7 +140,20 @@ session.)
 - **Barge-in:** talking over the assistant stops it instantly.
 - **No silent mic:** if the browser has no `SpeechRecognition` and there is no `serverUrl`
   to send recorded audio to, the mic button renders visibly disabled with an explanation
-  rather than doing nothing when tapped.
+  rather than doing nothing when tapped. Every other failure — refused permission, no
+  device, a dead speech service — surfaces a readable message instead of nothing.
+- **Two-way STT fallback (one retry each way).** Server STT unavailable falls back to the
+  browser; a browser recogniser that is missing or whose service fails falls back to the
+  server. The second matters on iOS, where `webkitSpeechRecognition` exists inside an
+  installed PWA but does not work. The user is told which path is in use once, not on
+  every tap.
+- **`voiceDefaults`** sets this app's starting preferences — `shipped defaults <
+  voiceDefaults < the user's stored settings` — so a host can start on server STT without
+  bypassing the settings panel:
+
+  ```js
+  PageAssistant.init({ serverUrl, capabilities, voiceDefaults: { sttMode: "server" } });
+  ```
 
 ## Language
 

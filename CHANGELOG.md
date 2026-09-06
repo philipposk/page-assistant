@@ -42,11 +42,23 @@ packages bumped `0.4.0 → 0.5.0` together.
   files. The host already knows what language it is in.
 - Chat-sidebar labels (rename prompt, search, context menu) are not covered yet.
 
-### A control that cannot work is not shown as one
+### Every mic path now ends in something the user can read
 
 - **The mic button is disabled when nothing can back it** — no `SpeechRecognition` and no
   `serverUrl` for server STT — with a `title`/`aria-label` saying why. A button that
   silently does nothing was the whole shape of the reported bug.
+- **STT falls back in both directions, once each.** Server → browser existed; browser →
+  server is new and is the one that matters on iOS, where `webkitSpeechRecognition` is
+  present inside an installed PWA / WKWebView but its service does not work. A single
+  retry, never a loop, and the user is told which path is being used once per session
+  rather than on every tap.
+- **New `"service"` error reason**, separating "the speech service failed" from "the user
+  refused the microphone". Only the former is retried through the server — a refused mic
+  would fail identically there. `VoiceErrorReason` gains `"service"`; a caller switching on
+  it with a default branch is unaffected.
+- **`listenServer()` no longer resolves `""` when there is no server**, and a missing
+  recogniser with no server throws instead of resolving empty. Those empty resolves were
+  how a mic tap ended in no transcript, no error and no message.
 
 ### UX
 
@@ -59,6 +71,18 @@ packages bumped `0.4.0 → 0.5.0` together.
   in English among translated replies; the count was developer telemetry that meant
   nothing to the people using these apps. Both now pass through `strings`, and the counts
   are gone from the UI.
+
+### Host-settable voice defaults
+
+- **`voiceDefaults?: Partial<VoiceSettings>` on `PageAssistantConfig`**, layered
+  `shipped defaults < voiceDefaults < the user's stored settings`. A host can say "start
+  with server transcription on this app" while a user who picks something else in the
+  settings panel still wins. Passing a full `VoiceOptions` object to `voice` bypasses the
+  settings UI and its change listener, so the user's own preferences stop applying — this
+  is the way to set a default without that.
+- The shipped `DEFAULTS` are unchanged: browser (free) STT stays the default, so no app is
+  moved onto a paid path by a version bump. `setVoiceDefaults` / `getVoiceDefaults` are
+  exported for hosts that configure voice outside `init`.
 
 ### Reconciled branches
 

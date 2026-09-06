@@ -16,7 +16,9 @@ import {
   VOICE_SETTINGS_CHANGE_EVENT,
   VOICE_SETTINGS_STORAGE_KEY,
   getVoiceSettings,
+  setVoiceDefaults,
   voiceOptionsFromSettings,
+  type VoiceSettings,
 } from "./settings.js";
 import { openVoiceSettingsModal, mountVoiceSettingsPanel, closeVoiceSettingsModal } from "./settings-ui.js";
 import {
@@ -99,6 +101,15 @@ export interface PageAssistantConfig {
    * `DEFAULT_STRINGS` for the full key set.
    */
   strings?: Partial<WidgetStrings>;
+  /**
+   * This app's starting voice preferences, e.g. `{ sttMode: "server" }`.
+   *
+   * Layered `shipped defaults < voiceDefaults < the user's stored settings`, so a host can
+   * say "start with server transcription here" while a user who picks something else in
+   * the settings panel still wins. Unlike passing a full `VoiceOptions` object to `voice`,
+   * this keeps the settings UI and its change listener working.
+   */
+  voiceDefaults?: Partial<VoiceSettings>;
 }
 
 export { capability } from "./capability.js";
@@ -143,6 +154,7 @@ export {
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 export { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
+export { setVoiceDefaults, getVoiceDefaults } from "./settings.js";
 export { resolveVoiceLang, voiceInputAvailable } from "./voice.js";
 
 class PageAssistantController {
@@ -164,12 +176,15 @@ class PageAssistantController {
   private lastTurn?: { text: string; attachments?: FileAttachment[] };
   private greetedChatId: string | null = null;
   private notedSttFallback = false;
+  private notedBrowserFallback = false;
   private destroyed = false;
   /** English defaults merged with whatever the host translated. */
   private strings: WidgetStrings = DEFAULT_STRINGS;
 
   constructor(private cfg: PageAssistantConfig) {
     this.strings = resolveStrings(cfg.strings);
+    // Before the first getVoiceSettings() call below — it reads this layer.
+    setVoiceDefaults(cfg.voiceDefaults);
     this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
     this.assistantSettingsKey = cfg.assistantSettingsStorageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
     const assistantSettings = getAssistantSettings(this.assistantSettingsKey);
@@ -315,6 +330,8 @@ class PageAssistantController {
     closeVoiceSettingsModal();
     this.ui.destroy();
     removeDiscoveryHint();
+    // Module-level, so clear it or a re-init with a different config inherits stale defaults.
+    setVoiceDefaults(undefined);
   }
 
   updateConfig(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
@@ -663,6 +680,12 @@ class PageAssistantController {
           this.notedSttFallback = true;
           this.ui.addMessage("system", this.strings.voiceServerFallback);
         },
+        // The reverse direction (iOS PWA / WKWebView): told once, not on every tap.
+        onBrowserFallback: () => {
+          if (this.notedBrowserFallback) return;
+          this.notedBrowserFallback = true;
+          this.ui.addMessage("system", this.strings.voiceBrowserFallback);
+        },
       });
     } catch (e) {
       if (e instanceof VoiceError) {
@@ -670,6 +693,8 @@ class PageAssistantController {
           "no-speech": this.strings.voiceNoSpeech,
           "not-allowed": this.strings.voiceNotAllowed,
           "no-mic": this.strings.voiceNoMic,
+          // Service-level failure with no server to retry through.
+          service: this.strings.micUnavailable,
           other: this.strings.voiceError,
         };
         this.ui.addMessage("system", map[e.reason] ?? map.other);
