@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import path from "node:path";
 import type { Ticket, TicketStore } from "@page-assistant/core";
 
@@ -7,25 +7,69 @@ const MAX_TICKETS = 5000;
 /**
  * JSON-file ticket store: feedback survives server restarts without needing a database.
  * Good default for small deployments; swap for a DB store at scale.
+ *
+ * Writes are atomic (temp file + rename) so a crash mid-write can't leave a half-written
+ * file. If the file IS somehow unparseable on load, we move it aside as `.corrupt` and
+ * start fresh — instead of silently returning [] and then overwriting (wiping) all tickets
+ * on the next save.
  */
 export class JsonFileTicketStore implements TicketStore {
-  constructor(private filePath: string) {
-    mkdirSync(path.dirname(filePath), { recursive: true });
+  private dirEnsured = false;
+
+  constructor(private filePath: string) {}
+
+  /**
+   * Create the parent directory lazily — only right before the FIRST write. Doing it in the
+   * constructor meant merely importing/instantiating the server created a `./data` dir in the
+   * CWD at boot, even for deployments that never file-persist tickets. Idempotent.
+   */
+  private ensureDir(): void {
+    if (this.dirEnsured) return;
+    mkdirSync(path.dirname(this.filePath), { recursive: true });
+    this.dirEnsured = true;
   }
 
   private load(): Ticket[] {
     if (!existsSync(this.filePath)) return [];
+    let raw: string;
     try {
-      return JSON.parse(readFileSync(this.filePath, "utf8"));
+      raw = readFileSync(this.filePath, "utf8");
     } catch {
+      return [];
+    }
+    if (!raw.trim()) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      // Corrupt store: preserve it for inspection rather than clobbering on next save.
+      const aside = `${this.filePath}.corrupt-${Date.now()}`;
+      try {
+        renameSync(this.filePath, aside);
+        console.error(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            level: "error",
+            route: "ticket-store",
+            msg: `ticket file unparseable; moved to ${aside}`,
+          })
+        );
+      } catch {
+        /* best effort */
+      }
       return [];
     }
   }
 
   save(t: Ticket): void {
+    this.ensureDir();
     const all = this.load();
     all.push({ ...t, createdAt: t.createdAt ?? new Date().toISOString() });
-    writeFileSync(this.filePath, JSON.stringify(all.slice(-MAX_TICKETS), null, 1));
+    const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    // Write to a temp file then atomically rename over the target: a crash mid-write leaves
+    // the old file intact rather than a truncated one.
+    writeFileSync(tmp, JSON.stringify(all.slice(-MAX_TICKETS), null, 1));
+    renameSync(tmp, this.filePath);
   }
 
   list(limit = 100): Ticket[] {

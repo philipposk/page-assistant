@@ -1,6 +1,6 @@
 [project]
 name = "page-assistant"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python client for the page-assistant REST API"
 readme = "README.md"
 license = { text = "MIT" }

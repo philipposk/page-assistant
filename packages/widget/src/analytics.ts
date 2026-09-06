@@ -9,13 +9,22 @@ export interface AnalyticsEvent {
 const LOCAL_KEY = "page_assistant_analytics";
 const MAX_EVENTS = 500;
 
-export function trackEvent(type: string, meta?: Record<string, unknown>, serverUrl?: string) {
+export function trackEvent(
+  type: string,
+  meta?: Record<string, unknown>,
+  serverUrl?: string,
+  authToken?: string
+) {
   const ev: AnalyticsEvent = { type, ts: new Date().toISOString(), meta };
   appendLocal(ev);
   if (serverUrl) {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    // /v1/analytics is guarded when PA_AUTH_TOKEN is set — without the bearer the POST 401s
+    // and analytics silently vanish.
+    if (authToken) headers.authorization = `Bearer ${authToken}`;
     fetch(`${serverUrl.replace(/\/$/, "")}/v1/analytics`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(ev),
       keepalive: true,
     }).catch(() => {});

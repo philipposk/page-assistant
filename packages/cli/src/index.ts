@@ -1,10 +1,33 @@
 #!/usr/bin/env node
-/** page-assistant CLI — health, chat, serve */
-import { createServer } from "@page-assistant/server";
+/** page-assistant CLI — health, chat, serve, models */
+import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { createServer, JsonFileTicketStore, type ServerConfig } from "@page-assistant/server";
 
+// Load a local .env if present so `serve` behaves like the server's own bin.ts
+// (keys, PA_AUTH_TOKEN, PORT). Node 20.12+/22 built-in; ignore if the file is absent.
+try {
+  (process as NodeJS.Process & { loadEnvFile?: (p?: string) => void }).loadEnvFile?.();
+} catch {
+  /* no .env — fine */
+}
+
+const VERSION = readVersion();
 const [cmd, ...args] = process.argv.slice(2);
 const serverUrl = (process.env.PA_SERVER_URL ?? "http://localhost:8787").replace(/\/$/, "");
 const authToken = process.env.PA_AUTH_TOKEN;
+
+function readVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // dist/index.js -> ../package.json
+    const pkg = JSON.parse(readFileSync(resolve(here, "..", "package.json"), "utf8"));
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 async function main() {
   switch (cmd ?? "help") {
@@ -15,21 +38,34 @@ async function main() {
       await chat(args.join(" "));
       break;
     case "serve":
-      serve(Number(args[0] ?? process.env.PORT ?? 8787));
+      await serve();
       break;
     case "models":
       await models();
       break;
     default:
-      console.log(`page-assistant CLI v0.3.0
+      console.log(`page-assistant CLI v${VERSION}
 
 Usage:
-  page-assistant health          Check backend health
-  page-assistant chat <message>  Send message to /v1/agent (if configured)
-  page-assistant models          List available LLM models
-  page-assistant serve [port]    Start standalone proxy server
+  page-assistant health              Check backend health
+  page-assistant chat <message>      Send message to /v1/agent
+  page-assistant models              List available LLM models
+  page-assistant serve [port]        Start standalone proxy server
 
-Env: PA_SERVER_URL, PA_AUTH_TOKEN, PORT
+Serve flags:
+  --config <path>   Load a config module (.js/.mjs default export) or JSON file
+                    providing { capabilities, llmTxt, appName, ... }. Required to
+                    mount /v1/agent, /llm.txt and /.well-known/llm-actions.json —
+                    without capabilities those endpoints 404 (see examples/full-server.mjs).
+
+Notes:
+  \`chat\` and the MCP \`ask_page_assistant\` tool call POST /v1/agent, which only
+  mounts when the server was started with capabilities. Point them at a config-backed
+  server (e.g. \`page-assistant serve --config ./examples/full-server.mjs\`, or run
+  examples/full-server.mjs directly).
+
+Env: PA_SERVER_URL, PA_AUTH_TOKEN, PORT, PA_CORS_ORIGIN, PA_TICKETS_FILE
+     A local .env is loaded automatically if present.
 `);
   }
 }
@@ -60,7 +96,14 @@ async function chat(message: string) {
   });
   const text = await res.text();
   if (!res.ok) {
-    console.error(text);
+    if (res.status === 404) {
+      console.error(
+        `${serverUrl}/v1/agent is not mounted. Start a server WITH capabilities ` +
+          `(e.g. \`page-assistant serve --config ./examples/full-server.mjs\` or run that file directly).`
+      );
+    } else {
+      console.error(text);
+    }
     process.exit(1);
   }
   try {
@@ -71,9 +114,90 @@ async function chat(message: string) {
   }
 }
 
-function serve(port: number) {
-  createServer({ corsOrigin: process.env.PA_CORS_ORIGIN ?? "*" }).listen(port, () => {
-    console.log(`[page-assistant] listening on http://localhost:${port}`);
+/** Parse `--config <path>` from serve args; the first bare arg is the port. */
+function parseServeArgs(argv: string[]): { port?: number; config?: string } {
+  let port: number | undefined;
+  let config: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--config") {
+      config = argv[++i];
+    } else if (a.startsWith("--config=")) {
+      config = a.slice("--config=".length);
+    } else if (!port && /^\d+$/.test(a)) {
+      port = Number(a);
+    }
+  }
+  return { port, config };
+}
+
+/** Load a ServerConfig from a JS/MJS module (default export or named `config`) or a JSON file. */
+async function loadConfig(path: string): Promise<Partial<ServerConfig>> {
+  const abs = resolve(process.cwd(), path);
+  if (/\.json$/i.test(path)) {
+    return JSON.parse(readFileSync(abs, "utf8"));
+  }
+  const mod = await import(pathToFileURL(abs).href);
+  // ESM default-export interop: `export default config` shows up as `mod.default`.
+  // Fall back to a named `config` export, then the module namespace itself.
+  let cfg = mod.default ?? mod.config ?? mod;
+  // A config module may itself default-export via a `{ default }` wrapper (some
+  // bundlers / JSON-module interop); unwrap one more level if that's all it is.
+  if (cfg && typeof cfg === "object" && "default" in cfg && Object.keys(cfg).length === 1) {
+    cfg = (cfg as { default: unknown }).default;
+  }
+  if (typeof cfg === "function") return await (cfg as () => Partial<ServerConfig>)();
+  return cfg as Partial<ServerConfig>;
+}
+
+async function serve() {
+  const { port, config } = parseServeArgs(args);
+  const resolvedPort = port ?? Number(process.env.PORT ?? 8787);
+
+  let extra: Partial<ServerConfig> = {};
+  if (config) {
+    try {
+      extra = await loadConfig(config);
+    } catch (e) {
+      console.error(`Failed to load config "${config}":`, (e as Error).message);
+      process.exit(1);
+    }
+  }
+
+  const server = createServer({
+    corsOrigin: process.env.PA_CORS_ORIGIN ?? "*",
+    // Persist tickets to disk (parity with the server's own bin.ts) instead of losing
+    // them on restart with the default in-memory store.
+    ticketStore: new JsonFileTicketStore(process.env.PA_TICKETS_FILE ?? "./data/tickets.json"),
+    ...extra,
+  });
+
+  const httpServer = server.listen(resolvedPort, () => {
+    console.log(`[page-assistant] listening on http://localhost:${resolvedPort}`);
+    console.log("  POST /v1/llm/complete  POST /v1/voice/tts  POST /v1/voice/stt  POST /v1/feedback");
+    if (extra.capabilities?.length) {
+      console.log("  POST /v1/agent  GET /llm.txt  GET /.well-known/llm-actions.json  (from --config)");
+    } else {
+      console.log("  (no --config: /v1/agent and /llm.txt are NOT mounted — see examples/full-server.mjs)");
+    }
+    if (!process.env.PA_AUTH_TOKEN) {
+      console.log("  WARNING: PA_AUTH_TOKEN not set — spend endpoints are open (rate-limited only).");
+    }
+  });
+
+  // Clean, actionable failure instead of an unhandled-error stack trace when the
+  // port is taken (the common case: another server — or a stray full-server.mjs —
+  // already bound it).
+  httpServer.on("error", (e: NodeJS.ErrnoException) => {
+    if (e.code === "EADDRINUSE") {
+      console.error(
+        `Port ${resolvedPort} is already in use. Stop the process using it, or pass a ` +
+          `free port (e.g. \`page-assistant serve 8788\` or PORT=8788).`
+      );
+    } else {
+      console.error(`Failed to start server: ${e.message}`);
+    }
+    process.exit(1);
   });
 }
 

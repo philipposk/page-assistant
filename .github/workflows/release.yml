@@ -1,0 +1,53 @@
+name: Release
+
+# Publishes the npm packages when you push a version tag, e.g. `git tag v0.4.0 && git push --tags`.
+#
+# Requires an npm automation token stored as the repo secret NPM_TOKEN
+# (Settings → Secrets and variables → Actions → New repository secret). The token
+# must have publish rights to the @page-assistant scope.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # allows npm provenance if enabled
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm install
+      # Build once up front so workspace cross-deps resolve; each package also runs
+      # prepublishOnly (npm run build) as a safety net at publish time.
+      - run: npm run build
+      - run: npm run typecheck
+      # Gate the publish on the full test suite, not just core: run core tests
+      # (npm test) AND the server tests before any package leaves the machine.
+      - run: npm test
+      - run: node --test packages/server/test/*.test.mjs
+
+      # Publish in dependency order: core first, then everything that depends on it.
+      # --workspace targets the package; publishes are idempotent-safe (a version that
+      # already exists errors, so bump versions before tagging).
+      - run: npm publish --workspace @page-assistant/core --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --workspace @page-assistant/widget --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --workspace @page-assistant/server --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --workspace @page-assistant/cli --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --workspace @page-assistant/mcp --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

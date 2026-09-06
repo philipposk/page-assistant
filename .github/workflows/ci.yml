@@ -13,7 +13,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      # Lockfile is in sync with the workspace versions, so use `npm ci` for a clean,
+      # reproducible install that fails fast on any drift.
+      - run: npm ci
+      # Build before typecheck/test: composite project refs and dist/ outputs must exist.
       - run: npm run build
+      - run: npm run typecheck
       - run: npm test
       - run: node --test packages/server/test/*.test.mjs

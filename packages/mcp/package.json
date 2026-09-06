@@ -1,16 +1,19 @@
 {
   "name": "@page-assistant/mcp",
-  "version": "0.3.0",
+  "version": "0.5.1",
   "description": "MCP server exposing page-assistant agent endpoint to Cursor, Claude Desktop, etc.",
   "license": "MIT",
+  "engines": { "node": ">=20.6.0" },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": { "page-assistant-mcp": "./dist/index.js" },
-  "files": ["dist"],
+  "files": ["dist", "LICENSE", "README.md"],
   "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/mcp" },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

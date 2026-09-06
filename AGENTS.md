@@ -25,6 +25,29 @@ Make the assistant able to do **everything a signed-in user could do** on that s
 - Pass user-controlled URLs as `knowledgeUrl` (same-origin only)
 - Duplicate voice-settings UI — use `mountVoiceSettingsPanel()` from `@page-assistant/widget`
 
+## Talking to an app from your own agent (MCP + CLI)
+
+If you are an agent that wants to **use** an app that ships page-assistant (rather than
+embed one), install the MCP server — it is the artifact Cursor / Claude Desktop users
+add:
+
+- **`@page-assistant/mcp`** — MCP stdio server. Tools: `ask_page_assistant` (drives the
+  app's assistant via `POST /v1/agent`) and `health_check`. Configure with
+  `PA_SERVER_URL` (and `PA_AUTH_TOKEN` if the server requires it). The target server
+  must be started **with capabilities**, or `/v1/agent` returns 404 — see
+  `examples/full-server.mjs`.
+- **`@page-assistant/cli`** — `page-assistant chat "<message>"` hits the same
+  `/v1/agent` endpoint; `serve --config <file>` starts a capability-backed server.
+
+Example MCP config:
+
+```json
+{ "mcpServers": { "page-assistant": {
+  "command": "npx", "args": ["-y", "@page-assistant/mcp"],
+  "env": { "PA_SERVER_URL": "http://localhost:8787" }
+} } }
+```
+
 ## Reference implementation
 
 [Transcriber](https://github.com/philipposk/transcriber): `components/PageAssistantWidget.tsx`, `lib/page-assistant/capabilities.ts`, `app/api/pa/*`
