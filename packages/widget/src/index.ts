@@ -60,6 +60,13 @@ export interface PageAssistantConfig {
   autoSpeak?: boolean;
   /** Use extended settings modal (model, theme, chat export). Default true. */
   useExtendedSettings?: boolean;
+  /**
+   * Show the model picker in settings. Set false where the server fixes the
+   * model — a dropdown that silently does nothing is worse than none.
+   */
+  showModelPicker?: boolean;
+  /** What to say instead, when the picker is hidden. */
+  modelFixedNote?: string;
   onSettings?: () => void;
   settingsPageUrl?: string;
   settingsStorageKey?: string;
@@ -251,6 +258,8 @@ class PageAssistantController {
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
       serverUrl: cfg.serverUrl,
       authToken: cfg.authToken,
+      showModel: cfg.showModelPicker,
+      modelFixedNote: cfg.modelFixedNote,
     };
 
     this.ui = new WidgetUI(cfg.appName ?? "Assistant", {

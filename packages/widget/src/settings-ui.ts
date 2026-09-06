@@ -78,7 +78,7 @@ function renderForm(root: HTMLElement, storageKey: string): () => void {
   const refreshSpeak = () => {
     const s = getVoiceSettings(storageKey);
     speakCb.checked = s.autoSpeak;
-    speakText.textContent = s.autoSpeak ? "On (☎ in assistant)" : "Off — text only (default)";
+    speakText.textContent = s.autoSpeak ? "On (🔊 in assistant)" : "Off — text only (default)";
   };
   speakCb.onchange = () => {
     setVoiceSettings({ autoSpeak: speakCb.checked }, storageKey);

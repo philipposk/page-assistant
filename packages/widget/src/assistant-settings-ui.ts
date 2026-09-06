@@ -36,6 +36,17 @@ export interface AssistantSettingsUIOptions {
   serverUrl?: string;
   /** Bearer token forwarded to the capabilities probe if the deployment guards it. */
   authToken?: string;
+  /**
+   * Hide the model picker.
+   *
+   * Some deployments fix the model on the server — an unauthenticated proxy has
+   * to, or a visitor could upgrade themselves to a costlier one. On those, a
+   * dropdown that silently does nothing is worse than no dropdown, so say what
+   * is actually happening instead.
+   */
+  showModel?: boolean;
+  /** What to say in place of the picker when `showModel` is false. */
+  modelFixedNote?: string;
 }
 
 const TABS = ["General", "Voice", "Data"] as const;
@@ -76,7 +87,7 @@ export function mountAssistantSettingsPanel(
     root.appendChild(tabs);
 
     const body = el("div", "tab-body");
-    if (activeTab === "General") renderGeneral(body, storageKey);
+    if (activeTab === "General") renderGeneral(body, storageKey, opts);
     else if (activeTab === "Voice") renderVoice(body, voiceKey, caps);
     else renderData(body, opts.chatStore);
     root.appendChild(body);
@@ -105,8 +116,14 @@ export function mountAssistantSettingsPanel(
   };
 }
 
-function renderGeneral(root: HTMLElement, storageKey: string) {
+function renderGeneral(root: HTMLElement, storageKey: string, opts: AssistantSettingsUIOptions = {}) {
   const s = getAssistantSettings(storageKey);
+  if (opts.showModel === false) {
+    const note = el("p", "hint");
+    note.style.margin = "0 0 12px";
+    note.textContent = opts.modelFixedNote ?? "The model is chosen by this site and cannot be changed here.";
+    root.appendChild(note);
+  } else {
   addRow(root, "Model", () => {
     const sel = el("select", "field") as HTMLSelectElement;
     sel.innerHTML = DEFAULT_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
@@ -120,6 +137,7 @@ function renderGeneral(root: HTMLElement, storageKey: string) {
   modelNote.style.margin = "-6px 0 12px 152px";
   modelNote.textContent = "Models depend on the server's configured providers — an unsupported one will error when you send.";
   root.appendChild(modelNote);
+  }
   addRow(root, "Theme", () => {
     const sel = el("select", "field") as HTMLSelectElement;
     sel.innerHTML = `<option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>`;
