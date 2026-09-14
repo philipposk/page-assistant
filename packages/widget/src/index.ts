@@ -2,9 +2,14 @@ import {
   Assistant,
   InMemoryStore,
   rememberFactCapability,
+  DEFAULT_SCRUB_RULES,
+  PLAIN_TEXT_SCRUB_RULES,
   type Capability,
   type ChatMessage,
+  type ForcedRouter,
   type PageContext,
+  type ScrubRule,
+  type VocabularyOption,
 } from "@page-assistant/core";
 import { proxyProvider, ProxyError } from "./llmProxy.js";
 import { Voice, VoiceError, voiceInputAvailable, type VoiceOptions } from "./voice.js";
@@ -126,10 +131,30 @@ export interface PageAssistantConfig {
    * this keeps the settings UI and its change listener working.
    */
   voiceDefaults?: Partial<VoiceSettings>;
+  /**
+   * The assistant's own name ("Ada"). It introduces itself by it, answers "who are you"
+   * with it, and it replaces `appName` as the panel title. `appName` stays the product.
+   */
+  assistantName?: string;
+  /**
+   * The real values in the user's workspace (tags, statuses, projects) and what their
+   * words mean here. Fixed, or `{ load, ttlMs, timeoutMs }`; see `AssistantOptions.vocabulary`.
+   */
+  vocabulary?: VocabularyOption;
+  /**
+   * Rewrites applied to every reply. Default: `DEFAULT_SCRUB_RULES` plus
+   * `PLAIN_TEXT_SCRUB_RULES` — replies render as plain text here, so markdown `**` would
+   * show literally. A list replaces the default (spread both in to extend it); `false`
+   * turns scrubbing off.
+   */
+  scrub?: ScrubRule[] | false;
+  /** `false` turns keyword-forced routing off; a function replaces it. */
+  forcedRouting?: false | ForcedRouter;
 }
 
 export { capability } from "./capability.js";
-export type { Capability } from "@page-assistant/core";
+export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
+export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
@@ -243,9 +268,13 @@ class PageAssistantController {
       ),
       memory,
       appName: cfg.appName,
+      assistantName: cfg.assistantName,
       persona: cfg.persona,
       knowledge: cfg.knowledge,
       suggestions: cfg.suggestions,
+      vocabulary: cfg.vocabulary,
+      scrub: cfg.scrub ?? [...DEFAULT_SCRUB_RULES, ...PLAIN_TEXT_SCRUB_RULES],
+      forcedRouting: cfg.forcedRouting,
     });
 
     if (cfg.voice !== false) {
@@ -264,7 +293,7 @@ class PageAssistantController {
     const settingsUiOpts = {
       storageKey: this.settingsKey,
       settingsPageUrl: cfg.settingsPageUrl,
-      title: cfg.appName ? `${cfg.appName} assistant` : "Page assistant",
+      title: cfg.assistantName ?? (cfg.appName ? `${cfg.appName} assistant` : "Page assistant"),
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
       serverUrl: cfg.serverUrl,
       authToken: cfg.authToken,
@@ -275,7 +304,7 @@ class PageAssistantController {
       strings: cfg.strings,
     };
 
-    this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
+    this.ui = new WidgetUI(cfg.assistantName ?? cfg.appName ?? "Assistant", {
       onSend: (t, attachments) => this.handleUser(t, attachments),
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),

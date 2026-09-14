@@ -5,6 +5,9 @@ import {
   InMemoryStore,
   generateLlmTxt,
   generateActionsJson,
+  type ForcedRouter,
+  type ScrubRule,
+  type VocabularyOption,
   MemoryTicketStore,
   makeTicketFloodGuard,
   normalizeTicket,
@@ -54,6 +57,14 @@ export interface ServerConfig {
   knowledge?: string;
   /** Suggested prompts the assistant offers proactively. */
   suggestions?: string[];
+  /** The assistant's own name; also published in llm.txt unless `llmTxt.assistantName` is set. */
+  assistantName?: string;
+  /** Workspace vocabulary for /v1/agent. One Assistant per request, so it loads per request. */
+  vocabulary?: VocabularyOption;
+  /** Reply scrub rules for /v1/agent. Default DEFAULT_SCRUB_RULES; `false` turns it off. */
+  scrub?: ScrubRule[] | false;
+  /** `false` turns keyword-forced routing off; a function replaces it. */
+  forcedRouting?: false | ForcedRouter;
   /** Which discovery files to serve. All default true. */
   expose?: { robotsTxt?: boolean; llmTxt?: boolean; llmActions?: boolean };
 }
@@ -276,9 +287,13 @@ export function createServer(config: ServerConfig = {}): Express {
         llm,
         memory,
         appName: config.appName,
+        assistantName: config.assistantName,
         persona: config.persona,
         knowledge: config.knowledge,
         suggestions: config.suggestions,
+        vocabulary: config.vocabulary,
+        scrub: config.scrub,
+        forcedRouting: config.forcedRouting,
       });
 
     app.post("/v1/agent", guard, agentLimit, budgetGate, async (req, res) => {
@@ -347,7 +362,11 @@ export function createServer(config: ServerConfig = {}): Express {
   }
   // --- llm.txt + machine manifest for other agents to discover the app ---
   if (config.llmTxt && config.capabilities) {
-    const meta = { ...config.llmTxt, feedbackEndpoint };
+    const meta = {
+      ...config.llmTxt,
+      assistantName: config.llmTxt.assistantName ?? config.assistantName,
+      feedbackEndpoint,
+    };
     if (expose.llmTxt)
       app.get("/llm.txt", (_req, res) => {
         res.type("text/plain").send(generateLlmTxt(meta, config.capabilities!));
