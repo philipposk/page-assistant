@@ -1,7 +1,7 @@
 export * from "./types.js";
 export { Assistant, forcedFactualTool, validateFactualText, stripUnknownKeys, validateArgs, coerceArgTypes } from "./grounding.js";
 export type { AssistantOptions, ForcedRouter } from "./grounding.js";
-export { validateCapabilities, capabilitySchemaProblems, CapabilitySchemaError } from "./registry.js";
+export { validateCapabilities, capabilitySchemaProblems, CapabilitySchemaError, isCapabilityEnabled } from "./registry.js";
 export { generateLlmTxt, generateActionsJson } from "./llmtxt.js";
 export type { LlmTxtMeta } from "./llmtxt.js";
 export { InMemoryStore } from "./memory.js";

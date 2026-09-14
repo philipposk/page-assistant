@@ -70,6 +70,22 @@ function walkSchema(node: unknown, path: string, problems: string[]): void {
   }
 }
 
+/**
+ * Whether a capability is available right now (see `Capability.enabled`). A flag that
+ * throws counts as off: a broken check must not advertise a feature that may not work.
+ */
+export function isCapabilityEnabled(cap: Capability): boolean {
+  const enabled = cap.enabled;
+  if (typeof enabled === "function") {
+    try {
+      return Boolean(enabled());
+    } catch {
+      return false;
+    }
+  }
+  return enabled !== false;
+}
+
 /** Throw a CapabilitySchemaError listing every problem, or return quietly. */
 export function validateCapabilities(caps: Capability[]): void {
   const problems = capabilitySchemaProblems(caps);

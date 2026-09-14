@@ -10,7 +10,7 @@ import type {
   PageContext,
   ToolInvocation,
 } from "./types.js";
-import { validateCapabilities } from "./registry.js";
+import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
 
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
@@ -121,16 +121,22 @@ export class Assistant {
     return lines.join("\n");
   }
 
+  /** Capabilities switched on right now — the only ones the model is told about. */
+  private available(): Capability[] {
+    return this.capabilities.filter(isCapabilityEnabled);
+  }
+
   private route(message: string): string | undefined {
     const router = this.opts.forcedRouting;
     if (router === false) return undefined;
-    const name = (router ?? forcedFactualTool)(message, this.capabilities);
+    const available = this.available();
+    const name = (router ?? forcedFactualTool)(message, available);
     // Forcing a tool the provider was not given fails the whole turn.
-    return name && this.caps.has(name) ? name : undefined;
+    return name && available.some((c) => c.name === name) ? name : undefined;
   }
 
   private toolSpecs() {
-    return this.capabilities.map((c) => ({
+    return this.available().map((c) => ({
       name: c.name,
       description: c.description + (c.confirm ? " (requires user confirmation)" : ""),
       parameters: { ...c.parameters, additionalProperties: false },
@@ -192,6 +198,17 @@ export class Assistant {
           messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content: `ERROR: no such capability` });
           continue;
         }
+        // Switched off since the model last saw it (or named from history): refuse, never run.
+        if (!isCapabilityEnabled(cap)) {
+          invocations.push({ name: cap.name, args: call.args, ok: false, error: "capability is not available right now" });
+          messages.push({
+            role: "tool",
+            toolName: cap.name,
+            toolCallId: call.id,
+            content: `ERROR: this capability is not available right now. Tell the user plainly; do not offer it.`,
+          });
+          continue;
+        }
         // Confirm gate: stage instead of executing (user UI or external agent must approve).
         // `preview` spells out the action + args so a UI can show exactly what will happen.
         if (cap.confirm) {
@@ -239,7 +256,7 @@ export class Assistant {
   /** Execute a confirmed capability (called after user approves a pendingConfirmation). */
   async confirmAndRun(name: string, args: Record<string, unknown>, page: PageContext): Promise<ChatResponse> {
     const cap = this.caps.get(name);
-    if (!cap) return { message: "That action is no longer available.", invocations: [] };
+    if (!cap || !isCapabilityEnabled(cap)) return { message: "That action is no longer available.", invocations: [] };
     const inv = await this.execute(cap, args, page, "user");
     return { message: inv.ok ? inv.rendered ?? "Done." : `That failed: ${inv.error}`, invocations: [inv] };
   }

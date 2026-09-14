@@ -1,4 +1,8 @@
 import type { Capability } from "./types.js";
+import { isCapabilityEnabled } from "./registry.js";
+
+/** What other agents may see: exposed to agents, and available right now. */
+const advertised = (caps: Capability[]) => caps.filter((c) => c.exposeToAgents !== false && isCapabilityEnabled(c));
 
 export interface LlmTxtMeta {
   appName: string;
@@ -16,7 +20,7 @@ export interface LlmTxtMeta {
  * both understand the app and talk to the assistant living on it.
  */
 export function generateLlmTxt(meta: LlmTxtMeta, caps: Capability[]): string {
-  const exposed = caps.filter((c) => c.exposeToAgents !== false);
+  const exposed = advertised(caps);
   const lines: string[] = [];
   lines.push(`# ${meta.appName}`);
   lines.push("");
@@ -69,8 +73,7 @@ export function generateActionsJson(meta: LlmTxtMeta, caps: Capability[]) {
     schemaVersion: "1.0",
     app: { name: meta.appName, url: meta.appUrl, description: meta.description },
     agentEndpoint: meta.agentEndpoint,
-    capabilities: caps
-      .filter((c) => c.exposeToAgents !== false)
+    capabilities: advertised(caps)
       .map((c) => ({ name: c.name, description: c.description, parameters: c.parameters, confirm: !!c.confirm })),
   };
 }

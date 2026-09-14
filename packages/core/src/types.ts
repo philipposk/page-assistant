@@ -54,6 +54,17 @@ export interface Capability<A = any, R = any> {
   tags?: string[];
   /** If false, capability is hidden from the external agent endpoint (llm.txt). Default true. */
   exposeToAgents?: boolean;
+  /**
+   * Whether this capability is available right now. When false it is left out of
+   * everything the model and other agents are told — the tool list, forced routing,
+   * llm.txt and the actions manifest — and a stale call to it is refused, not run.
+   *
+   * For a feature flag, a plan tier, or a backend that is not configured: registering
+   * it anyway would let the assistant promise something that is unavailable. A function
+   * is re-read every turn, so flipping the flag needs no re-registration; one that
+   * throws counts as off. Default true.
+   */
+  enabled?: boolean | (() => boolean);
 }
 
 export interface CapabilityRunContext {
