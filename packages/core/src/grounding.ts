@@ -66,7 +66,7 @@ export interface AssistantOptions {
    * Forced routing: before the model's first round, a keyword heuristic may force one
    * capability for an unambiguous factual question. `false` turns it off; a function
    * replaces it (return a capability name, or undefined to let the model choose). A name
-   * that is not a registered capability is ignored.
+   * that is not a registered, enabled capability is ignored.
    */
   forcedRouting?: false | ForcedRouter;
   /**
