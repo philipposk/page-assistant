@@ -13,6 +13,7 @@ import type {
 import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
 import { oneLine } from "./text.js";
 import { DEFAULT_SCRUB_RULES, scrubText, type ScrubRule } from "./scrub.js";
+import { VocabularyResolver, type VocabularyOption } from "./vocabulary.js";
 
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
@@ -76,6 +77,13 @@ export interface AssistantOptions {
    * "our records"]]` — or pass `false` to turn it off.
    */
   scrub?: ScrubRule[] | false;
+  /**
+   * The real values in the user's workspace (tags, statuses, projects) and what their
+   * words mean here, so loose wording maps onto real values. A fixed Vocabulary, a loader
+   * (cached 60 s), or `{ load, ttlMs, timeoutMs, key }`. Best-effort: a loader that throws
+   * or is slow is skipped for that turn and never breaks the chat.
+   */
+  vocabulary?: VocabularyOption;
 }
 
 /** Picks a capability to force on the first round, or undefined to leave it to the model. */
@@ -90,10 +98,12 @@ export type ForcedRouter = (message: string, capabilities: Capability[]) => stri
  */
 export class Assistant {
   private caps: Map<string, Capability>;
+  private vocabulary?: VocabularyResolver;
   constructor(private opts: AssistantOptions) {
     // Fail at registration, once, with the capability's name — not on every chat turn.
     validateCapabilities(opts.capabilities);
     this.caps = new Map(opts.capabilities.map((c) => [c.name, c]));
+    if (opts.vocabulary) this.vocabulary = new VocabularyResolver(opts.vocabulary);
   }
 
   get capabilities(): Capability[] {
@@ -105,7 +115,7 @@ export class Assistant {
     this.opts.knowledge = [this.opts.knowledge, text].filter(Boolean).join("\n\n").slice(0, 6000);
   }
 
-  private systemPrompt(page: PageContext, recalled: string[] = []): string {
+  private systemPrompt(page: PageContext, recalled: string[] = [], vocabulary = ""): string {
     const app = this.opts.appName ?? "this app";
     const name = oneLine(this.opts.assistantName, 60);
     const lines = [
@@ -133,6 +143,7 @@ export class Assistant {
     }
     if (this.opts.persona) lines.push(this.opts.persona);
     if (recalled.length) lines.push(`Things you remember about this user (from earlier sessions):\n${recalled.map((r) => `- ${r}`).join("\n")}`);
+    if (vocabulary) lines.push(vocabulary);
     if (this.opts.knowledge) lines.push(`\nWhat this app is (background — use it to understand requests, not as facts to quote verbatim):\n${this.opts.knowledge.slice(0, 4000)}`);
     if (this.opts.suggestions?.length)
       lines.push(`If the user seems unsure what to do, offer one of: ${this.opts.suggestions.slice(0, 6).join("; ")}.`);
@@ -184,6 +195,17 @@ export class Assistant {
       /* memory must never break a chat */
     }
 
+    // Workspace vocabulary, once per turn. The resolver already swallows loader failures;
+    // this also covers a host `key` or option that throws.
+    let vocabulary = "";
+    if (this.vocabulary) {
+      try {
+        vocabulary = await this.vocabulary.resolve({ page: req.page, caller });
+      } catch {
+        /* nor must the vocabulary */
+      }
+    }
+
     const accUsage = (u?: LLMTokenUsage, provider?: string) => {
       if (u?.promptTokens) usage.promptTokens += u.promptTokens;
       if (u?.completionTokens) usage.completionTokens += u.completionTokens;
@@ -194,7 +216,7 @@ export class Assistant {
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const out = await this.opts.llm.complete({
-        system: this.systemPrompt(req.page, recalled),
+        system: this.systemPrompt(req.page, recalled, vocabulary),
         messages: windowMessages(messages, window),
         tools: this.toolSpecs(),
         forceTool: round === 0 ? forced : undefined,
