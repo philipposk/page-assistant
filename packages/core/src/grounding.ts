@@ -10,6 +10,7 @@ import type {
   PageContext,
   ToolInvocation,
 } from "./types.js";
+import { validateCapabilities } from "./registry.js";
 
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
@@ -65,6 +66,8 @@ export interface AssistantOptions {
 export class Assistant {
   private caps: Map<string, Capability>;
   constructor(private opts: AssistantOptions) {
+    // Fail at registration, once, with the capability's name — not on every chat turn.
+    validateCapabilities(opts.capabilities);
     this.caps = new Map(opts.capabilities.map((c) => [c.name, c]));
   }
 
