@@ -54,7 +54,17 @@ export interface AssistantOptions {
   knowledge?: string;
   /** Suggested things the user can ask. The assistant offers these proactively. */
   suggestions?: string[];
+  /**
+   * Forced routing: before the model's first round, a keyword heuristic may force one
+   * capability for an unambiguous factual question. `false` turns it off; a function
+   * replaces it (return a capability name, or undefined to let the model choose). A name
+   * that is not a registered capability is ignored.
+   */
+  forcedRouting?: false | ForcedRouter;
 }
+
+/** Picks a capability to force on the first round, or undefined to leave it to the model. */
+export type ForcedRouter = (message: string, capabilities: Capability[]) => string | undefined;
 
 /**
  * The grounded assistant. Mirrors the strive page-assistant safety model:
@@ -111,6 +121,14 @@ export class Assistant {
     return lines.join("\n");
   }
 
+  private route(message: string): string | undefined {
+    const router = this.opts.forcedRouting;
+    if (router === false) return undefined;
+    const name = (router ?? forcedFactualTool)(message, this.capabilities);
+    // Forcing a tool the provider was not given fails the whole turn.
+    return name && this.caps.has(name) ? name : undefined;
+  }
+
   private toolSpecs() {
     return this.capabilities.map((c) => ({
       name: c.name,
@@ -123,7 +141,7 @@ export class Assistant {
     const caller = req.caller ?? "user";
     const messages: ChatMessage[] = [...(req.history ?? []), { role: "user", content: req.message }];
     const invocations: ToolInvocation[] = [];
-    const forced = forcedFactualTool(req.message, this.capabilities);
+    const forced = this.route(req.message);
     let corrected = false;
     const usage = { promptTokens: 0, completionTokens: 0, provider: undefined as string | undefined };
     const window = historyWindow();
@@ -328,6 +346,10 @@ function typeMatches(want: string, got: string): boolean {
  * intents we force the matching capability so the model can't answer from memory.
  * Heuristic and conservative: only fires on a confident keyword + a single
  * obviously-matching capability.
+ *
+ * Never picks a confirm-gated capability: forcing exists to answer factual questions from
+ * real data, and a question that happens to share words with a write ("how many orders
+ * would archiving touch?") must not come back as a confirmation card for that write.
  */
 export function forcedFactualTool(message: string, caps: Capability[]): string | undefined {
   const m = message.toLowerCase();
@@ -335,6 +357,7 @@ export function forcedFactualTool(message: string, caps: Capability[]): string |
   if (!factualIntent) return undefined;
   // Score capabilities by name/description keyword overlap with the message.
   const scored = caps
+    .filter((c) => !c.confirm)
     .map((c) => ({ c, score: overlapScore(m, `${c.name} ${c.description}`.toLowerCase()) }))
     .filter((s) => s.score >= 2)
     .sort((a, b) => b.score - a.score);
@@ -342,10 +365,17 @@ export function forcedFactualTool(message: string, caps: Capability[]): string |
   return undefined;
 }
 
+/**
+ * How many of the message's words start a word in `b`. Matching at a word start keeps
+ * plurals and inflections ("order" → "orders", "match" → "matching") but stops a word
+ * counting because it sits inside an unrelated one ("rate" in "generate", "late" in
+ * "template"), which forced the wrong capability.
+ */
 function overlapScore(a: string, b: string): number {
   const words = new Set(a.replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 3));
+  const target = ` ${b.replace(/[^a-z0-9]+/g, " ")}`;
   let s = 0;
-  for (const w of words) if (b.includes(w)) s++;
+  for (const w of words) if (target.includes(` ${w}`)) s++;
   return s;
 }
 
