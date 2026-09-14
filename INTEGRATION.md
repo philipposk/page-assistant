@@ -69,6 +69,8 @@ Rules:
 - `run()` calls your real backend with the **current user's** credentials
 - `render()` produces facts shown to the user; the validator blocks invented numbers
 - `confirm: true` for writes, deletes, payments, sends, irreversible navigation
+- `enabled: () => flags.exports` for anything behind a feature flag, a plan tier, or a backend that may not be configured. While it is off the assistant is never told about it and a stale call is refused
+- Schemas are checked at registration: one `type` per field (optional fields already accept `null`), unique names, every `required` key declared in `properties`. A bad schema throws `CapabilitySchemaError` at `init`, instead of failing every chat turn
 - Built-in blind-mode `open_page_link` already requires confirm; prefer explicit capabilities for integrated apps
 
 ## 4. Embed the widget
@@ -77,6 +79,7 @@ Rules:
 PageAssistant.init({
   serverUrl: "/api/pa",              // your proxy prefix
   appName: "My App",
+  assistantName: "Ada",              // optional: who the assistant says it is; appName stays the product
   persona: "Short role description.",
   knowledge: "What this app does (from README).",
   knowledgeUrl: "/llm.txt",          // same-origin only; fetched on first open
@@ -87,6 +90,27 @@ PageAssistant.init({
   suggestions: ["Search my recent orders", "What can you do?"],
 });
 ```
+
+**Workspace vocabulary** (recommended when users create their own tags, folders,
+statuses or projects): give the model the real values, so "the Q3 shortlist" maps onto a
+real tag instead of a question back to the user.
+
+```typescript
+PageAssistant.init({
+  // ...
+  vocabulary: {
+    load: async () => ({
+      values: { Tags: await myApi.tagNames(), Statuses: ["Open", "Won", "Lost"] },
+      glossary: { shortlist: "a tag", board: "the Projects view" },
+    }),
+    ttlMs: 60_000, // the default; a load that throws or takes over 3 s is skipped and retried next turn
+  },
+});
+```
+
+On the server, one `Assistant` serves one `/v1/agent` request, so the vocabulary is loaded
+per request. If you build a long-lived `Assistant` that serves several workspaces, return
+the workspace id from `vocabulary.key`.
 
 **Settings page embed** (optional):
 
@@ -147,6 +171,11 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
 - [ ] CORS restricted to your origin (standalone server)
 - [ ] `ELEVENLABS_API_KEY` / `OPENAI_API_KEY` only on server
 - [ ] Test: ask assistant to do something it shouldn't — it must refuse or ask to confirm
+- [ ] Parity list: every action a user can take in your UI maps to a capability, or is
+      noted as browser-only (downloads, payments, OAuth)
+- [ ] Your internal names (databases, services, old product names) added to `scrub`:
+      `[...DEFAULT_SCRUB_RULES, ["InternalDB", "our records"]]`. Credentials, connection
+      strings and environment variable names are scrubbed by default
 - [ ] **Running more than one instance?** The standalone server's rate limiter, usage
       meter, daily budget, agent session memory, and analytics are **per-process
       in-memory**, and the JSON ticket file is last-writer-wins. Run **one** instance, or
