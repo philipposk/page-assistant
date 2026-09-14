@@ -2,13 +2,13 @@
 
 An embeddable, **voice-capable**, **grounded** assistant that drops into any web app, **reads the page**, and performs **real actions** for the user — without faking or hallucinating results. It also publishes an `llm.txt` so *other* AI agents can understand your app and talk to the assistant living on it.
 
-Born from the strive-backend page assistant (its anti-hallucination layer), Daisy (voice), and AI-OS (memory + LLM routing), rebuilt as a portable TypeScript SDK.
+Built from a production page assistant's anti-hallucination layer, Daisy (voice), and AI-OS (memory + LLM routing), rebuilt as a portable TypeScript SDK.
 
 ---
 
 ## Why it doesn't hallucinate
 
-Most "AI on your site" widgets let the model *say* it did something. This one can't. Three guarantees, lifted from the strive page assistant and generalized:
+Most "AI on your site" widgets let the model *say* it did something. This one can't. Three guarantees, proven in production and generalized:
 
 1. **Capability boundary** — the assistant can only call functions the host explicitly registers. No registered action ⇒ it tells the user it can't, instead of pretending.
 2. **Trusted rendering** — each capability's own `render()` produces the user-facing numbers. The model narrates *around* facts, it doesn't invent them.
