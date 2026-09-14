@@ -3,6 +3,8 @@ export { Assistant, forcedFactualTool, validateFactualText, stripUnknownKeys, va
 export type { AssistantOptions, ForcedRouter } from "./grounding.js";
 export { validateCapabilities, capabilitySchemaProblems, CapabilitySchemaError, isCapabilityEnabled } from "./registry.js";
 export { generateLlmTxt, generateActionsJson } from "./llmtxt.js";
+export { scrubText, DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "./scrub.js";
+export type { ScrubRule } from "./scrub.js";
 export type { LlmTxtMeta } from "./llmtxt.js";
 export { InMemoryStore } from "./memory.js";
 export { rememberFactCapability } from "./builtins.js";

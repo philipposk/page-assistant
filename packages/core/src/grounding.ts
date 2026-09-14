@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
 import { oneLine } from "./text.js";
+import { DEFAULT_SCRUB_RULES, scrubText, type ScrubRule } from "./scrub.js";
 
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
@@ -67,6 +68,14 @@ export interface AssistantOptions {
    * that is not a registered capability is ignored.
    */
   forcedRouting?: false | ForcedRouter;
+  /**
+   * Rewrites applied to every user-facing message (model prose, render() output, and the
+   * error text of a failed run()) and to error text sent back to the model. Defaults to
+   * DEFAULT_SCRUB_RULES: credentials, connection strings, environment variable names.
+   * Extend it with your own internal terms — `[...DEFAULT_SCRUB_RULES, ["InternalDB",
+   * "our records"]]` — or pass `false` to turn it off.
+   */
+  scrub?: ScrubRule[] | false;
 }
 
 /** Picks a capability to force on the first round, or undefined to leave it to the model. */
@@ -108,6 +117,7 @@ export class Assistant {
       `- If you lack a capability for the request, say so plainly and suggest what the user can do.`,
       `- For capabilities marked confirm, describe what will happen and wait for the user to approve before calling.`,
       `- Be concise. Prefer doing the action over describing it.`,
+      `- Never mention environment variables, API routes, internal system names or capability names to the user; describe things in the user's terms.`,
       `Current page: ${page.title ?? page.path} (${page.path}).`,
     ];
     if (page.state && Object.keys(page.state).length) {
@@ -127,6 +137,12 @@ export class Assistant {
     if (this.opts.suggestions?.length)
       lines.push(`If the user seems unsure what to do, offer one of: ${this.opts.suggestions.slice(0, 6).join("; ")}.`);
     return lines.join("\n");
+  }
+
+  /** Last step before text reaches the user (or goes back to the model as an error). */
+  private say(text: string): string {
+    const rules = this.opts.scrub ?? DEFAULT_SCRUB_RULES;
+    return rules === false ? text : scrubText(text, rules);
   }
 
   /** Capabilities switched on right now — the only ones the model is told about. */
@@ -190,7 +206,7 @@ export class Assistant {
         // Final text. Validate against everything the tools actually returned.
         const { text, wasCorrected } = validateFactualText(out.text, invocations);
         corrected = corrected || wasCorrected;
-        return { message: text, invocations, corrected, usage: finalUsage() };
+        return { message: this.say(text), invocations, corrected, usage: finalUsage() };
       }
 
       // Record the model's OWN tool-call turn verbatim (with stable ids) so the next round
@@ -221,7 +237,7 @@ export class Assistant {
         // `preview` spells out the action + args so a UI can show exactly what will happen.
         if (cap.confirm) {
           return {
-            message: `Confirm this action? ${cap.description}`,
+            message: this.say(`Confirm this action? ${cap.description}`),
             invocations,
             pendingConfirmation: {
               name: cap.name,
@@ -246,7 +262,7 @@ export class Assistant {
           role: "tool",
           toolName: cap.name,
           toolCallId: call.id,
-          content: inv.ok ? inv.rendered ?? JSON.stringify(inv.result) : `ERROR: ${inv.error}`,
+          content: inv.ok ? inv.rendered ?? JSON.stringify(inv.result) : `ERROR: ${this.say(inv.error ?? "")}`,
         });
       }
     }
@@ -254,7 +270,7 @@ export class Assistant {
     // Ran out of rounds — return the last trusted rendered result rather than guessing.
     const last = [...invocations].reverse().find((i) => i.ok && i.rendered);
     return {
-      message: last?.rendered ?? "I could not complete that. Please try rephrasing.",
+      message: this.say(last?.rendered ?? "I could not complete that. Please try rephrasing."),
       invocations,
       corrected,
       usage: finalUsage(),
@@ -266,7 +282,7 @@ export class Assistant {
     const cap = this.caps.get(name);
     if (!cap || !isCapabilityEnabled(cap)) return { message: "That action is no longer available.", invocations: [] };
     const inv = await this.execute(cap, args, page, "user");
-    return { message: inv.ok ? inv.rendered ?? "Done." : `That failed: ${inv.error}`, invocations: [inv] };
+    return { message: this.say(inv.ok ? inv.rendered ?? "Done." : `That failed: ${inv.error}`), invocations: [inv] };
   }
 
   private async execute(
