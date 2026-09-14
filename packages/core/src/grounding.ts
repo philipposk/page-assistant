@@ -11,6 +11,7 @@ import type {
   ToolInvocation,
 } from "./types.js";
 import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
+import { oneLine } from "./text.js";
 
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
@@ -47,6 +48,11 @@ export interface AssistantOptions {
   persona?: string;
   /** App name used in the system prompt. */
   appName?: string;
+  /**
+   * The assistant's own name, if it has one ("Ada"). The model introduces itself by it and
+   * answers "who are you" with it; `appName` stays the product. One line, 60 chars max.
+   */
+  assistantName?: string;
   /**
    * Free-text knowledge about the app — README, docs, "what this is for". Injected into the
    * system prompt so the assistant understands the product, not just its buttons.
@@ -92,9 +98,11 @@ export class Assistant {
 
   private systemPrompt(page: PageContext, recalled: string[] = []): string {
     const app = this.opts.appName ?? "this app";
+    const name = oneLine(this.opts.assistantName, 60);
     const lines = [
-      `You are the in-app assistant for ${app}. You help the user by calling the app's real capabilities.`,
+      `You are ${name ? `${name}, ` : ""}the in-app assistant for ${app}. You help the user by calling the app's real capabilities.`,
       `RULES:`,
+      ...(name ? [`- If asked who or what you are, you are ${name}, the assistant built into ${app}.`] : []),
       `- You can only do things by calling a listed capability. Never claim you did something you did not call.`,
       `- Never invent numbers, names, or results. If a capability returns data, report exactly what it returned.`,
       `- If you lack a capability for the request, say so plainly and suggest what the user can do.`,
