@@ -56,7 +56,7 @@ export interface AssistantOptions {
 }
 
 /**
- * The grounded assistant. Mirrors the strive page-assistant safety model:
+ * The grounded assistant. Safety model:
  *  1. The model may ONLY call registered capabilities (no free-form actions).
  *  2. Factual answers come from each capability's render(), not model prose.
  *  3. A validator strips/replaces model text that asserts numbers the tools
@@ -271,7 +271,7 @@ export function coerceArgTypes(
   return out;
 }
 
-/** Drop keys the schema didn't declare — mirrors strive's additionalProperties:false hardening. */
+/** Drop keys the schema didn't declare — the same hardening as additionalProperties:false. */
 export function stripUnknownKeys(args: Record<string, unknown>, schema: { properties?: Record<string, unknown> }) {
   if (!schema.properties) return args;
   const allowed = new Set(Object.keys(schema.properties));
@@ -350,7 +350,7 @@ function overlapScore(a: string, b: string): number {
  * Factual text validator. If the model's prose contains numbers that do NOT appear
  * anywhere in the trusted rendered tool output, we don't trust the prose — we fall
  * back to concatenating the trusted renders. This is the "validator replaces LLM text
- * when it invents a count" guarantee from strive, generalized.
+ * when it invents a count" guarantee.
  */
 export function validateFactualText(
   text: string,

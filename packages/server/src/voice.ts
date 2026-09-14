@@ -1,5 +1,5 @@
 // Voice proxy: TTS via ElevenLabs (falls back to OpenAI), STT via OpenAI Whisper.
-// Ported in spirit from strive voice_handler + Daisy voice_service. Keys stay server-side.
+// Ported in spirit from earlier voice services, including Daisy's. Keys stay server-side.
 import { fetchWithRetry, voiceTimeoutMs } from "./llm/fetchWithRetry.js";
 import { HttpProviderError } from "./llm/errors.js";
 
