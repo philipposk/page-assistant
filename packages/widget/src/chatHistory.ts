@@ -110,6 +110,20 @@ export class ChatHistoryStore {
     }
   }
 
+  /** Remove the given chats from what localStorage holds under `storageKey`, leaving the rest. */
+  static removeLocal(ids: string[], storageKey = CHAT_HISTORY_STORAGE_KEY) {
+    if (typeof localStorage === "undefined" || !ids.length) return;
+    const drop = new Set(ids);
+    const data = ChatHistoryStore.readLocal(storageKey);
+    data.sessions = data.sessions.filter((s) => !drop.has(s.id));
+    if (data.activeId && drop.has(data.activeId)) data.activeId = null;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(data));
+    } catch {
+      /* storage blocked — nothing more to do */
+    }
+  }
+
   /** True while this store reads and writes localStorage. */
   get persistsLocally(): boolean {
     return this.persistLocal;
@@ -150,6 +164,20 @@ export class ChatHistoryStore {
       if (!existing) this.data.sessions.push({ ...incoming });
       else if (existing.updatedAt < incoming.updatedAt) Object.assign(existing, incoming);
     }
+    this.commit({ kind: "replace" });
+  }
+
+  /** Drop chats from this store without reporting it: they are gone elsewhere already. */
+  forget(ids: string[]) {
+    const drop = new Set(ids);
+    this.data.sessions = this.data.sessions.filter((s) => !drop.has(s.id));
+    if (this.data.activeId && drop.has(this.data.activeId)) this.data.activeId = null;
+    this.commit({ kind: "replace" });
+  }
+
+  /** Empty the store (and localStorage, while persisting). Not reported as per-chat deletes. */
+  clearAll() {
+    this.data = emptyData();
     this.commit({ kind: "replace" });
   }
 
