@@ -150,6 +150,40 @@ export interface WidgetStrings {
   settingsImportChats: string;
   settingsImportOk: string;
   settingsImportFailed: string;
+
+  // --- Settings: chat history (Data tab) -----------------------------------
+  settingsHistory: string;
+  historyModeAccount: string;
+  historyModeAccountHint: string;
+  historyModeDevice: string;
+  historyModeDeviceHint: string;
+  historyModeOff: string;
+  historyModeOffHint: string;
+  /** `{months}` is the adapter's `retentionMonths`. Shown only when the adapter sets it. */
+  historyRetention: string;
+  historyAccountNoAdapter: string;
+  historyAccountSignedOut: string;
+  /** Native confirm() when switching to account with chats on this device. `{count}` chats. */
+  historyMovePrompt: string;
+  /** `{count}` chats still only in this browser, while in account mode. */
+  historyMoveOffer: string;
+  historyMoveButton: string;
+  /** `{count}` chats moved. */
+  historyMoveDone: string;
+  historyMoveFailed: string;
+  historyAccountKept: string;
+  historyDeleteAll: string;
+  historyDeleteAllConfirm: string;
+  /** Used instead of historyDeleteAllConfirm when the account's chats go too. */
+  historyDeleteAllConfirmAccount: string;
+  historyDeleteDone: string;
+  historyDeleteFailed: string;
+  historyLoading: string;
+  historyLoadFailed: string;
+  historySaveFailed: string;
+  historyRetry: string;
+  /** Toast when a saved chat could not be fetched to open it. */
+  historyChatUnavailable: string;
 }
 
 export const DEFAULT_STRINGS: WidgetStrings = {
@@ -267,11 +301,39 @@ export const DEFAULT_STRINGS: WidgetStrings = {
   voiceNoteSomeGreyed:
     "Greyed-out server options aren't configured on this server; the browser handles them for free.",
 
-  settingsDataHint: "Export or import your chat history. Data stays in your browser unless you share it.",
+  settingsDataHint: "Export your chats to a file, or import a backup.",
   settingsExportChats: "Export all chats (JSON)",
   settingsImportChats: "Import chats…",
   settingsImportOk: "Imported successfully",
   settingsImportFailed: "Invalid backup file",
+
+  settingsHistory: "Chat history",
+  historyModeAccount: "Save to my account",
+  historyModeAccountHint: "Your chats are kept with your account, so they're there on any device you sign in on.",
+  historyModeDevice: "Save on this device",
+  historyModeDeviceHint: "Your chats stay in this browser only. They aren't saved to your account.",
+  historyModeOff: "Don't save",
+  historyModeOffHint: "Chats disappear when you reload or close the page.",
+  historyRetention: "Saved chats are deleted after {months} months without activity.",
+  historyAccountNoAdapter: "Saving to your account isn't available here.",
+  historyAccountSignedOut: "Sign in to save chats to your account.",
+  historyMovePrompt:
+    "Chats saved on this device: {count}. Move them to your account too?\n\nOK moves them. Cancel leaves them on this device only.",
+  historyMoveOffer: "Chats saved only on this device: {count}.",
+  historyMoveButton: "Move them to my account",
+  historyMoveDone: "Moved to your account: {count}.",
+  historyMoveFailed: "Some chats couldn't be moved and are still on this device.",
+  historyAccountKept: "Chats already saved to your account stay there until you delete them.",
+  historyDeleteAll: "Delete all my chats",
+  historyDeleteAllConfirm: "Delete all your chats on this device? This can't be undone.",
+  historyDeleteAllConfirmAccount: "Delete all your chats, on this device and in your account? This can't be undone.",
+  historyDeleteDone: "All your chats were deleted.",
+  historyDeleteFailed: "Couldn't delete the chats in your account. Please try again.",
+  historyLoading: "Loading your saved chats…",
+  historyLoadFailed: "Couldn't load your saved chats.",
+  historySaveFailed: "Couldn't save to your account. It will try again.",
+  historyRetry: "Try again",
+  historyChatUnavailable: "Couldn't open that chat. Please try again.",
 };
 
 /**
