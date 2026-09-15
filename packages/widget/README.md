@@ -35,7 +35,8 @@ want both the on-page assistant and the agent-to-agent endpoint.
 
 Chats stay in the browser by default. To sync them to the user's account, pass a
 `chatHistoryAdapter` that reads and writes the signed-in user's chats — the widget never
-talks to a database. `supabaseChatHistoryAdapter(client)` is a reference implementation and
+talks to a database. `supabaseChatHistoryAdapter(client)` (script tag:
+`PageAssistant.supabaseChatHistoryAdapter(client)`) is a reference implementation and
 `supabase/assistant_chats.sql` (shipped in this package) its migration, with row-level
 security and a 12-month inactivity sweep. Users pick account, device or off in settings.
 

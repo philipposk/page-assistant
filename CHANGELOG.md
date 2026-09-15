@@ -2,6 +2,25 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.6.1 — The script-tag global carries everything
+
+Found in samos.6x7.gr, which vendors `page-assistant.global.js`. All packages bumped
+`0.6.0 → 0.6.1` together.
+
+- **`window.PageAssistant` now holds every export of the module**, not a hand-kept subset.
+  In 0.6.0 it had only `init`, `configure`, `refreshChatHistory`, `destroy` and the settings
+  functions, so an app loading the script-tag bundle had no `supabaseChatHistoryAdapter` to
+  pass. With no adapter the widget kept chats on the device and its settings said "Saving
+  to your account isn't available here", with no error. Now
+  `PageAssistant.supabaseChatHistoryAdapter(supabase, { table, app })` works, and so do
+  `PageAssistant.capability`, `markdownLink`, `DEFAULT_SCRUB_RULES`,
+  `PLAIN_TEXT_SCRUB_RULES`, `toAccountChat`, `fromAccountChat`, `trackEvent` and the rest.
+  On a name clash the controller's own methods win. `PageAssistantBundle` is unchanged.
+- **A test loads the built global bundle** and fails if `window.PageAssistant` lacks any
+  module export, or anything INTEGRATION.md, README.md, AGENTS.md or the widget README
+  imports from `@page-assistant/widget` or calls as `PageAssistant.x`.
+- INTEGRATION.md: how to use the vendored bundle, and the adapter from it.
+
 ## 0.6.0 — Links in replies
 
 Replies can now carry clickable links, so "Try Aphrodite Garden, Yamas Tavern… and 68 more"
