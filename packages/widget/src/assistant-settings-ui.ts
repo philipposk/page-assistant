@@ -56,7 +56,7 @@ export interface AssistantSettingsUIOptions {
    * `true`  — always show the picker.
    * `false` — never show it (same as `showModel: false`).
    * `"auto"` (default) — ask the server: `GET /v1/models` reports whether the model is
-   * fixed server-side and which models it can actually serve.
+   * fixed server-side and which models it can actually serve. No answer, no picker.
    */
   modelPicker?: boolean | "auto";
   /** `false` when the host turned voice off (`voice: false`): the Voice tab is not shown. */

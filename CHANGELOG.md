@@ -56,6 +56,15 @@ routing, scrubbing, account chat history). All packages bumped `0.5.1 → 0.6.0`
   `settingsStorageKey` now reaches the Voice tab too. Choices saved by earlier versions
   under the wrong key are not carried over; users pick again.
 
+### The model picker only shows when the server offers a choice
+
+- With `showModelPicker: "auto"` (the default), a server that doesn't answer
+  `GET /v1/models` — a 404, a network error, bad JSON, or an answer with no models — now
+  gets **no picker**. It used to get the built-in list, but most hosts proxy through their
+  own route, which ignores the client's `model`, so the picker changed nothing (seen on
+  samos.6x7.gr). A server that lists models, including an older one returning just
+  `{models}`, still gets one; `showModelPicker: true` still forces it.
+
 ### Voice off means no voice controls
 
 - With `voice: false` the widget still showed the mic and read-aloud buttons and the

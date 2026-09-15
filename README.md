@@ -276,6 +276,8 @@ PageAssistant.init({
 - `"auto"` (default) calls `GET /v1/models`, which returns `{ models, fixed, reason? }`.
   `@page-assistant/server` filters `models` to the providers it actually holds keys for and
   reports `fixed: true` when `PA_FIXED_MODEL` is set or there is at most one model to pick.
+  A server that doesn't answer — typically your own proxy route, which ignores the client's
+  `model` — gets no picker. Serve `/v1/models` if yours really lets visitors choose.
 - `false` hides the picker outright — the right answer when your own server pins the model
   and ignores what the client asks. `modelFixedNote` replaces the explanation shown instead.
 - `true` always shows it.

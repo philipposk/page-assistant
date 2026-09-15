@@ -24,16 +24,17 @@ export interface ModelCatalog {
 /**
  * Ask `GET {serverUrl}/v1/models`.
  *
- * Degrades the safe way: any failure (404, network, bad JSON, an older server that only
- * returns `{models}`) resolves to the built-in list with `fixed: false`, so a server that
- * predates this endpoint still shows a working picker. A server that says `fixed` wins.
+ * A server that does not answer (404, network, bad JSON, no serverUrl) is taken to fix the
+ * model: most hosts proxy through their own route, which ignores the client's `model`, so a
+ * picker there changed nothing. Only a server that lists models gets one; an older server
+ * that returns just `{models}` still does. A server that says `fixed` wins.
  */
 export async function fetchModelCatalog(
   serverUrl: string | undefined,
   signal?: AbortSignal,
   authToken?: string
 ): Promise<ModelCatalog> {
-  const fallback: ModelCatalog = { models: [...DEFAULT_MODELS], fixed: false };
+  const fallback: ModelCatalog = { models: [...DEFAULT_MODELS], fixed: true };
   if (!serverUrl || typeof fetch === "undefined") return fallback;
   const base = serverUrl.replace(/\/$/, "");
   try {
@@ -47,11 +48,10 @@ export async function fetchModelCatalog(
           .filter((m): m is ModelChoice => !!m && typeof (m as ModelChoice).id === "string")
           .map((m) => ({ id: m.id, label: typeof m.label === "string" && m.label ? m.label : m.id, provider: m.provider }))
       : [];
-    return {
-      models: models.length ? models : fallback.models,
-      fixed: raw?.fixed === true,
-      reason: typeof raw?.reason === "string" && raw.reason.trim() ? raw.reason : undefined,
-    };
+    const reason = typeof raw?.reason === "string" && raw.reason.trim() ? raw.reason : undefined;
+    // An answer without a single model offers no choice either, unless it says otherwise.
+    if (!models.length && raw?.fixed !== false) return { ...fallback, reason };
+    return { models: models.length ? models : fallback.models, fixed: raw?.fixed === true, reason };
   } catch {
     return fallback;
   }
