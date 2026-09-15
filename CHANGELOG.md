@@ -50,12 +50,80 @@ Lessons from running a page assistant in production, generalised. No version bum
   than 3 s is skipped for that turn and not cached. Values are one line each and the
   block is bounded.
 
+### Chat history
+
+- **Three modes, chosen by the user in the Data tab:** `"account"` (saved through a host
+  adapter, synced across devices), `"device"` (localStorage, the default and the old
+  behaviour) and `"off"` (this page only). New init options: `chatHistoryMode` (the default
+  until the user picks), `chatHistoryAdapter`, `chatHistoryFallbackMode` and
+  `onChatHistoryError`; `PageAssistant.refreshChatHistory()` after a sign-in or sign-out.
+  The choice is remembered in the browser per signed-in user.
+- **`ChatHistoryAdapter`**, implemented by the host: `list`, `get`, `save`, `delete`,
+  `deleteAll`, and optionally `currentUserId`, `saveMany`, `retentionMonths`. The widget never
+  talks to a database. Without an adapter, or with nobody signed in, account falls back and
+  settings says why.
+- **Moving and leaving.** Switching to account offers to move the user's own device chats
+  (removed locally only once saved). Leaving account deletes nothing; "Delete all my chats"
+  empties the user's device chats and, when someone is signed in, the account.
+- **Device chats are kept per person.** When the adapter's `currentUserId()` names the user,
+  their device chats live under `${storageKey}:user:${id}`; the plain `storageKey` is the
+  signed-out slot. Each person sees only their own slot — after a sign-out, a sign-in or a
+  change of user, and not even briefly on page load (with such an adapter, device chats load
+  once the sign-in check finishes). "Move my chats" moves only the user's own. Signed-out
+  chats are offered separately, worded as "made while signed out on this device", and move
+  only on that explicit choice (into the account, or into the user's own device chats).
+  `moveDeviceChats({ from: "signed-out" })`, `ChatHistoryState.signedOutDeviceChatCount`,
+  `deviceStorageKey()` and `historyMoveOffers()` expose this; three new strings.
+- **Moving counts as activity.** A moved chat is saved with `updatedAt` set to the moment of
+  the move (`createdAt` keeps its real age), so account retention runs from the move. Before,
+  a chat older than the retention window was hidden and pruned right after the user was told
+  it was moved, and its device copy was already gone.
+- **Safe by construction:** empty chats are never saved; a chat listed without messages is
+  fetched before it is saved, so a rename cannot blank it; writes waiting when the user
+  signs out or changes are dropped, never sent as the next person.
+- **A reply in flight never lands in the next person's chats.** The question and its answer
+  used to be written wherever the page pointed when the answer arrived: after a sign-out,
+  the signed-out chats the next visitor sees; after another account signed in, that
+  account. Now the widget notes the chat and the signed-in user when it sends, and drops a
+  reply (or its error, and a confirmed action's result) if either changed meanwhile —
+  including when the user opened another chat. Nothing is pushed, saved or shown; a toast
+  (`historyReplyDiscarded`, one new string) says a reply was discarded.
+- **`offerSignedOutChats`** (default `true`). `false` never offers, counts or moves the chats
+  made in the browser while signed out: for apps used on shared computers.
+- **Reference Supabase adapter** (`supabaseChatHistoryAdapter`) and migration
+  (`packages/widget/supabase/assistant_chats.sql`, now shipped in the package): row-level
+  security with every policy `auth.uid() = user_id`, no anon access, timestamps that cannot
+  be set in the future, and a 12-month inactivity sweep scheduled with pg_cron when it is
+  enabled, with a documented fallback. Rows are keyed on `(user_id, app, id)` and the
+  adapter upserts on exactly that, so apps sharing the table never overwrite each other's
+  chat with the same id (the first draft keyed on `(user_id, id)`).
+- 26 new strings for the history section; `ChatHistoryStore` gains memory-only storage and
+  an `onChange` feed.
+
 ### Upgrade notes
 
 - A host whose capabilities have one of the schema problems above now fails at startup
   with the list, instead of misbehaving per turn.
 - Replies that contained one of the default scrub patterns now read differently;
   `scrub: false` restores the old output.
+- Chat history is unchanged unless you pass the new options: still `"device"`, same
+  storage key. The Data tab now shows the history choice, and its hint default changed to
+  "Export your chats to a file, or import a backup." (the old one claimed data never left
+  the browser, which account mode makes untrue). A translated `settingsDataHint` is kept.
+- Chats saved by earlier versions stay under the plain `storageKey`, now the signed-out slot.
+  Without an adapter, or with one that has no `currentUserId`, nothing moves. With one that
+  names users, a signed-in user no longer sees those chats as theirs; settings offers to add
+  them, worded as signed-out chats (unless `offerSignedOutChats: false`).
+- Applied an earlier copy of `assistant_chats.sql` (primary key `(user_id, id)`)? Re-run the
+  updated file — it re-keys the table only when it finds the old key — or add a migration:
+
+  ```sql
+  alter table public.assistant_chats drop constraint assistant_chats_pkey;
+  alter table public.assistant_chats add constraint assistant_chats_pkey primary key (user_id, app, id);
+  ```
+
+  Existing rows keep their `app` (default `''`), so nothing is lost. Update the adapter at the
+  same time: an old adapter's `onConflict: "user_id,id"` has no matching key afterwards.
 
 ## 0.5.1 — The rest of the translation, a themed panel, and an honest model picker
 

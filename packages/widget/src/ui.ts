@@ -31,6 +31,8 @@ export interface UIHandlers {
   /** Return true if the deleted/archived id was the active chat (so the store op ran). */
   onDeleteChat?: (id: string) => void;
   onArchiveChat?: (id: string) => void;
+  /** Fork through the controller, which may have to fetch the chat's messages first. */
+  onForkChat?: (id: string) => void;
 }
 
 export interface UIOptions {
@@ -260,6 +262,7 @@ export class WidgetUI {
         onPin: (id, pinned) => this.opts.chatStore!.pin(id, pinned),
         onRename: (id, title) => this.opts.chatStore!.rename(id, title),
         onFork: (id) => {
+          if (this.handlers.onForkChat) return this.handlers.onForkChat(id);
           this.opts.chatStore!.fork(id);
           this.handlers.onSelectChat?.(this.opts.chatStore!.getActiveId()!);
         },

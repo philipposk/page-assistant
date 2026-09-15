@@ -31,6 +31,14 @@ carry over to the server's `/v1/agent` + `llm.txt` — that path uses a separate
 `ServerConfig.capabilities` list in `@page-assistant/server`. Register in both if you
 want both the on-page assistant and the agent-to-agent endpoint.
 
+## Chat history: account, device or off
+
+Chats stay in the browser by default. To sync them to the user's account, pass a
+`chatHistoryAdapter` that reads and writes the signed-in user's chats — the widget never
+talks to a database. `supabaseChatHistoryAdapter(client)` is a reference implementation and
+`supabase/assistant_chats.sql` (shipped in this package) its migration, with row-level
+security and a 12-month inactivity sweep. Users pick account, device or off in settings.
+
 See [INTEGRATION.md](https://github.com/philipposk/page-assistant/blob/main/INTEGRATION.md).
 
 MIT

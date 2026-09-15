@@ -112,6 +112,66 @@ On the server, one `Assistant` serves one `/v1/agent` request, so the vocabulary
 per request. If you build a long-lived `Assistant` that serves several workspaces, return
 the workspace id from `vocabulary.key`.
 
+**Chat history in the user's account** (optional). By default chats stay in the browser
+(`"device"`). To sync them across the user's devices, give the widget an adapter that reads
+and writes the signed-in user's chats with their own credentials:
+
+```typescript
+import { supabaseChatHistoryAdapter } from "@page-assistant/widget";
+
+PageAssistant.init({
+  // ...
+  chatHistoryMode: "account",       // default until the user picks; "device" for sensitive data
+  chatHistoryAdapter: supabaseChatHistoryAdapter(supabase, { app: "my-app" }),
+});
+// Call after sign-in and sign-out:
+PageAssistant.refreshChatHistory();
+```
+
+1. Apply [`packages/widget/supabase/assistant_chats.sql`](./packages/widget/supabase/assistant_chats.sql)
+   as a migration in your own project. It creates `assistant_chats` with row-level security
+   (each user sees only their rows) and schedules the 12-month inactivity sweep with pg_cron
+   — or tells you to run it from your own daily job. Rows are keyed on `(user_id, app, id)`,
+   so several apps (the adapter's `app` option) can share the table without overwriting
+   each other's chats. Applied an earlier copy keyed on `(user_id, id)`? Re-run the file, or
+   add a migration with the two `alter table` lines in the CHANGELOG's upgrade notes.
+2. Pass the **user-session** client, never a service-role client. The adapter's
+   `currentUserId()` reads the session, so logged-out visitors fall back to
+   `chatHistoryFallbackMode` (`"device"` unless you say `"off"`).
+3. Not on Supabase? Implement `ChatHistoryAdapter` (`list`, `get`, `save`, `delete`,
+   `deleteAll`, optional `currentUserId`) against your API; every call must be scoped to
+   the signed-in user on the server.
+
+Users switch between account, device and off in the Data tab, and can delete one chat or all
+of them. For sensitive data, keep `chatHistoryMode: "device"` and let users opt in to account.
+
+**Shared computers.** Implement `currentUserId()` whenever two people might use one browser.
+With it, each signed-in user's device chats are kept under their own key
+(`${storageKey}:user:${id}`) and chats made while signed out under the plain `storageKey`
+(where earlier versions kept everything). The widget shows only the current person's slot —
+after sign-out, sign-in or a change of user — and "Move my chats to my account" moves only
+the user's own. Signed-out chats are offered separately, as "chats made while signed out on
+this device", and move only if the user picks that. Without `currentUserId` the widget can't
+tell people apart: all device chats share the one signed-out slot and are never offered to
+anyone as theirs. This keeps people apart in the widget; it is not encryption — anyone with
+the browser profile can read localStorage. On a shared machine, `"off"` or `"account"` is
+the safe choice for sensitive data.
+
+If your app runs on shared computers (a front desk, a kiosk, a family laptop), also pass
+`offerSignedOutChats: false`. Whoever used the browser while signed out is often not the
+person who signs in next, so the widget then never offers, counts or moves the signed-out
+chats — not into the account, not into the user's own device chats. They stay in the
+signed-out slot. The default, `true`, keeps the offer.
+
+A reply that is still loading when someone signs out or another account signs in is
+dropped, not saved into whatever is on screen by then; the same goes for a reply to a chat
+the user has left for another one. Call `refreshChatHistory()` as soon as your app's auth
+state changes so the widget notices promptly.
+
+**Moving and retention.** Moving device chats into the account counts as activity: each moved
+chat is saved with `updatedAt` = now (`createdAt` keeps its real age), so a chat older than
+the retention window is not deleted straight after the move.
+
 **Settings page embed** (optional):
 
 ```typescript
@@ -173,6 +233,10 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
 - [ ] Test: ask assistant to do something it shouldn't — it must refuse or ask to confirm
 - [ ] Parity list: every action a user can take in your UI maps to a capability, or is
       noted as browser-only (downloads, payments, OAuth)
+- [ ] Account chat history (if used): migration applied, RLS on, retention sweep scheduled,
+      adapter built on the user-session client with `currentUserId()`,
+      `refreshChatHistory()` called on sign-in/out, `offerSignedOutChats: false` if the app
+      runs on shared computers
 - [ ] Your internal names (databases, services, old product names) added to `scrub`:
       `[...DEFAULT_SCRUB_RULES, ["InternalDB", "our records"]]`. Credentials, connection
       strings and environment variable names are scrubbed by default

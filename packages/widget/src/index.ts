@@ -37,6 +37,8 @@ import {
   mountAssistantSettingsPanel,
 } from "./assistant-settings-ui.js";
 import { ChatHistoryStore } from "./chatHistory.js";
+import { ChatHistoryManager, type ChatHistoryMode } from "./chatHistoryMode.js";
+import type { ChatHistoryAdapter } from "./chatHistoryAccount.js";
 import { formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
 import { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
@@ -89,8 +91,43 @@ export interface PageAssistantConfig {
   useVoiceSettings?: boolean;
   authToken?: string;
   memory?: "persistent" | "session";
-  /** Disable chat history sidebar. Default false (enabled). */
+  /**
+   * Turn chat history off entirely: no sidebar, nothing saved, and no choice in settings.
+   * Wins over `chatHistoryMode`. Default false.
+   */
   disableChatHistory?: boolean;
+  /**
+   * Where chats are kept until the user picks otherwise in settings (their pick is
+   * remembered in this browser, per signed-in user):
+   * - `"device"` (default): this browser only — what every earlier version did;
+   * - `"account"`: the user's account, through `chatHistoryAdapter`, so chats follow them
+   *   to other devices;
+   * - `"off"`: this page only; nothing is saved.
+   */
+  chatHistoryMode?: ChatHistoryMode;
+  /**
+   * Your backend for "account" mode: list, get, save, delete and delete-all for the signed-in
+   * user. The widget never talks to a database itself. `supabaseChatHistoryAdapter()` is a
+   * reference implementation.
+   */
+  chatHistoryAdapter?: ChatHistoryAdapter;
+  /**
+   * Used while "account" is chosen but can't be used — no adapter, or nobody signed in.
+   * Default "device". Settings says why.
+   */
+  chatHistoryFallbackMode?: "device" | "off";
+  /**
+   * Offer a signed-in user the chats made in this browser while nobody was signed in, so
+   * they can move them into their account or their own device chats. Default true.
+   *
+   * Set `false` for apps used on shared computers (a kiosk, a front desk, a family laptop):
+   * whoever used the browser signed out may not be the person signed in now, so those chats
+   * are never offered, counted or moved. They stay where they are, for the next signed-out
+   * visitor. Only matters with an adapter that has `currentUserId()`.
+   */
+  offerSignedOutChats?: boolean;
+  /** Failed account loads and saves, for your logs. The user sees a short note in settings. */
+  onChatHistoryError?: (error: unknown) => void;
   /**
    * Enable image attachments. OFF by default: core has no vision plumbing, so accepting
    * images without a vision-capable backend would be a placebo (the model never sees them).
@@ -158,7 +195,41 @@ export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/cor
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
-export { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY } from "./chatHistory.js";
+export {
+  ChatHistoryStore,
+  CHAT_HISTORY_STORAGE_KEY,
+  CHAT_HISTORY_CHANGE_EVENT,
+  type ChatSession,
+  type ChatGroup,
+  type ChatStoreChange,
+} from "./chatHistory.js";
+export {
+  ChatHistoryManager,
+  resolveChatHistoryMode,
+  getStoredChatHistoryMode,
+  setStoredChatHistoryMode,
+  deviceStorageKey,
+  CHAT_HISTORY_MODES,
+  CHAT_HISTORY_MODE_STORAGE_KEY,
+  type ChatHistoryMode,
+  type DeviceChatSource,
+  type ChatHistoryState,
+  type ChatHistoryControls,
+  type AccountUnavailableReason,
+} from "./chatHistoryMode.js";
+export {
+  AccountHistorySync,
+  toAccountChat,
+  fromAccountChat,
+  type AccountChat,
+  type AccountChatSummary,
+  type ChatHistoryAdapter,
+} from "./chatHistoryAccount.js";
+export {
+  supabaseChatHistoryAdapter,
+  type SupabaseChatHistoryOptions,
+  type SupabaseClientLike,
+} from "./adapters/supabase.js";
 export {
   getAssistantSettings,
   setAssistantSettings,
@@ -190,7 +261,9 @@ export {
   mountAssistantSettingsPanel,
   openAssistantSettingsModal,
   closeAssistantSettingsModal,
+  historyMoveOffers,
   type AssistantSettingsUIOptions,
+  type HistoryMoveOffer,
 } from "./assistant-settings-ui.js";
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
@@ -205,7 +278,14 @@ class PageAssistantController {
   private voice?: Voice;
   private history: ChatMessage[] = [];
   private chatStore: ChatHistoryStore;
+  private historyMgr: ChatHistoryManager;
   private activeChatId: string | null = null;
+  /**
+   * Goes up whenever the conversation on screen is replaced by another one: a chat opened,
+   * a new chat, or the store swapped under it. With the manager's `userGeneration` it tells a
+   * reply that was still loading whether it may land (see `turn()`).
+   */
+  private chatGen = 0;
   private scanned = false;
   private listening = false;
   private ttsEnabled: boolean;
@@ -234,7 +314,19 @@ class PageAssistantController {
     const useStored = cfg.useVoiceSettings !== false;
     this.ttsEnabled = cfg.autoSpeak ?? (useStored ? stored.autoSpeak : false);
 
-    this.chatStore = new ChatHistoryStore(cfg.chatHistoryStorageKey);
+    // Owns the store and where it keeps chats. Device mode (the default) is decided here,
+    // synchronously, exactly as before — unless the adapter names users, in which case the
+    // user's own device chats, like account chats, load in start() below.
+    this.historyMgr = new ChatHistoryManager({
+      storageKey: cfg.chatHistoryStorageKey,
+      defaultMode: cfg.chatHistoryMode,
+      fallbackMode: cfg.chatHistoryFallbackMode,
+      disabled: cfg.disableChatHistory,
+      adapter: cfg.chatHistoryAdapter,
+      offerSignedOutChats: cfg.offerSignedOutChats,
+      onError: cfg.onChatHistoryError,
+    });
+    this.chatStore = this.historyMgr.store;
     if (!cfg.disableChatHistory) {
       const active = this.chatStore.getActive();
       if (active) {
@@ -295,6 +387,7 @@ class PageAssistantController {
       settingsPageUrl: cfg.settingsPageUrl,
       title: cfg.assistantName ?? (cfg.appName ? `${cfg.appName} assistant` : "Page assistant"),
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
+      history: cfg.disableChatHistory ? undefined : this.historyMgr,
       serverUrl: cfg.serverUrl,
       authToken: cfg.authToken,
       modelPicker: cfg.showModelPicker,
@@ -322,6 +415,7 @@ class PageAssistantController {
       onExportChat: () => this.exportCurrentChat(),
       onDeleteChat: (id) => this.deleteChat(id),
       onArchiveChat: (id) => this.archiveChat(id),
+      onForkChat: (id) => void this.forkChat(id),
     }, {
       launcherIcon: cfg.launcherIcon,
       chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
@@ -340,6 +434,10 @@ class PageAssistantController {
       this.ui.setActiveChat(this.activeChatId);
       this.greetedChatId = this.activeChatId; // don't greet over a restored conversation
     }
+
+    // A mode switch, a sign-out or "delete all" swaps the store's contents under the UI.
+    this.historyMgr.onReplaced(() => this.reanchorChat());
+    this.historyMgr.start().catch((e) => cfg.onChatHistoryError?.(e));
 
     this.ui.setTtsEnabled(this.ttsEnabled);
 
@@ -372,6 +470,7 @@ class PageAssistantController {
   destroy() {
     this.destroyed = true;
     this.dispose();
+    this.historyMgr.dispose(); // sends any waiting account writes, then stops
     this.voice?.cancelListen(); // stop a hot mic (in-flight listen) before dropping the ref
     this.voice?.stop();
     this.voice = undefined;
@@ -409,6 +508,7 @@ class PageAssistantController {
     const model = getAssistantSettings(this.assistantSettingsKey).model;
     const session = this.chatStore.create({ model });
     this.activeChatId = session.id;
+    this.chatGen++;
     this.history = [];
     this.clearPending();
     this.ui.clearLog();
@@ -471,10 +571,73 @@ class PageAssistantController {
     }
   }
 
-  private switchChat(id: string) {
+  /** Re-check who is signed in. Call it after your app signs a user in or out. */
+  refreshChatHistory(): Promise<void> {
+    return this.historyMgr.refresh();
+  }
+
+  /** An account chat listed without its messages is fetched first. False if it can't be. */
+  private async loadChat(id: string): Promise<boolean> {
+    if (!this.historyMgr.needsLoad(id)) return !!this.chatStore.get(id);
+    try {
+      if (await this.historyMgr.ensureLoaded(id)) return true;
+    } catch (e) {
+      this.cfg.onChatHistoryError?.(e);
+    }
+    this.ui.toast(this.strings.historyChatUnavailable);
+    return false;
+  }
+
+  private async forkChat(id: string) {
+    if (!(await this.loadChat(id))) return;
+    const forked = this.chatStore.fork(id);
+    if (forked) await this.switchChat(forked.id);
+  }
+
+  /**
+   * The store's contents were swapped. Keep the open conversation if the new contents still
+   * have it (carried into "off", or moved into the account); otherwise open what the new
+   * mode has, or a fresh chat.
+   */
+  private reanchorChat() {
+    if (this.cfg.disableChatHistory || this.destroyed) return;
+    const kept = this.activeChatId ? this.chatStore.get(this.activeChatId) : undefined;
+    if (kept) {
+      this.chatStore.setActive(kept.id);
+      if (kept.messages.length !== this.history.length) {
+        this.history = [...kept.messages];
+        this.ui.clearLog();
+        this.ui.loadMessages(this.displayHistory());
+      }
+      this.ui.setActiveChat(kept.id);
+      return;
+    }
+    this.chatGen++;
+    this.clearPending();
+    const next = this.chatStore.getActive();
+    if (next) {
+      this.activeChatId = next.id;
+      this.history = [...next.messages];
+    } else {
+      const created = this.chatStore.create({ model: getAssistantSettings(this.assistantSettingsKey).model });
+      this.activeChatId = created.id;
+      this.history = [];
+    }
+    this.ui.clearLog();
+    if (this.history.length) {
+      this.ui.loadMessages(this.displayHistory());
+      this.greetedChatId = this.activeChatId;
+    }
+    this.ui.setActiveChat(this.activeChatId);
+    if (this.scanned) this.showGreeting();
+  }
+
+  private async switchChat(id: string) {
+    if (!(await this.loadChat(id))) return;
     const session = this.chatStore.get(id);
     if (!session) return;
     this.persistCurrentChat();
+    if (id !== this.activeChatId) this.chatGen++;
     this.activeChatId = id;
     this.chatStore.setActive(id);
     this.history = [...session.messages];
@@ -483,6 +646,36 @@ class PageAssistantController {
     this.ui.loadMessages(this.displayHistory());
     this.ui.setActiveChat(id);
     this.track("chat_switch", { id });
+  }
+
+  /**
+   * Where a reply now being requested belongs: this chat, for the person signed in now.
+   * Taken before the request; `stillCurrent()` checks it when the reply comes back.
+   */
+  private turn(): Turn {
+    return { chatId: this.activeChatId, chatGen: this.chatGen, userGen: this.historyMgr.userGeneration };
+  }
+
+  /**
+   * False once the user left the chat the reply was for — opened another, started a new one —
+   * or once someone signed out or another account signed in. Such a reply must not be pushed,
+   * saved or shown: it would land in another conversation or in the next person's chats.
+   */
+  private stillCurrent(t: Turn): boolean {
+    return (
+      !this.destroyed &&
+      t.chatId === this.activeChatId &&
+      t.chatGen === this.chatGen &&
+      t.userGen === this.historyMgr.userGeneration
+    );
+  }
+
+  /** A reply (or its error) that is no longer wanted: nothing saved, nothing rendered. */
+  private discardReply() {
+    if (this.destroyed) return;
+    this.ui.setBusy(false);
+    this.ui.setState("idle");
+    this.ui.toast(this.strings.historyReplyDiscarded);
   }
 
   private persistCurrentChat() {
@@ -584,8 +777,10 @@ class PageAssistantController {
     this.ui.addMessage("user", text + (attachments?.length ? `\n📎 ${attachments.map((a) => a.name).join(", ")}` : ""));
     this.ui.setState("thinking");
     this.ui.setBusy(true);
+    const turn = this.turn();
     try {
       const res = await this.assistant.chat({ message, page: this.pageContext(), history: this.history });
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.history.push({ role: "user", content: message }, { role: "assistant", content: res.message });
       this.persistCurrentChat();
 
@@ -610,6 +805,8 @@ class PageAssistantController {
       await this.say(res.message);
       this.track("message_sent", { len: message.length });
     } catch (e) {
+      // No retry offered to whoever is here now: it would resend the previous person's question.
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.ui.setBusy(false);
       this.ui.setState("idle");
       this.showFriendlyError(e, () => this.retryLastTurn());
@@ -675,14 +872,19 @@ class PageAssistantController {
     const pending = this.pending;
     this.ui.setState("thinking");
     this.ui.setBusy(true);
+    const turn = this.turn();
     try {
       const res = await this.assistant.confirmAndRun(pending.name, pending.args, this.pageContext());
+      // The action ran; its result is only written where it was asked for.
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.history.push({ role: "assistant", content: res.message });
       this.persistCurrentChat();
       this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
     } catch (e) {
+      // Retrying would run the previous person's action again.
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.ui.setBusy(false);
       this.ui.setState("idle");
       this.showFriendlyError(e, () => {
@@ -762,6 +964,13 @@ class PageAssistantController {
   }
 }
 
+/** Taken when a reply is requested: the chat it is for, and who was signed in. */
+interface Turn {
+  chatId: string | null;
+  chatGen: number;
+  userGen: number;
+}
+
 let instance: PageAssistantController | undefined;
 
 export const PageAssistant = {
@@ -772,6 +981,13 @@ export const PageAssistant = {
   },
   configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
     instance?.updateConfig(patch);
+  },
+  /**
+   * Re-check who is signed in and apply the chat-history mode that follows. Call it after
+   * your app signs a user in or out; signing out drops account chats from the page.
+   */
+  refreshChatHistory(): Promise<void> {
+    return instance?.refreshChatHistory() ?? Promise.resolve();
   },
   /** Tear down the widget entirely (listeners, timers, shadow host, injected nodes). */
   destroy() {

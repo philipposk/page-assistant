@@ -26,7 +26,8 @@ import {
   type VoiceCapabilities,
 } from "./settings.js";
 import type { ChatHistoryStore } from "./chatHistory.js";
-import { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
+import type { ChatHistoryControls, ChatHistoryMode, ChatHistoryState, DeviceChatSource } from "./chatHistoryMode.js";
+import { DEFAULT_STRINGS, fmt, resolveStrings, type WidgetStrings } from "./strings.js";
 import { fetchModelCatalog, type ModelCatalog } from "./models.js";
 
 export interface AssistantSettingsUIOptions {
@@ -35,6 +36,8 @@ export interface AssistantSettingsUIOptions {
   settingsPageUrl?: string;
   title?: string;
   chatStore?: ChatHistoryStore;
+  /** Where chats are kept, and the controls to change it. Shown on the Data tab. */
+  history?: ChatHistoryControls;
   serverUrl?: string;
   /** Bearer token forwarded to the capabilities probe if the deployment guards it. */
   authToken?: string;
@@ -95,6 +98,25 @@ export function mountAssistantSettingsPanel(
   // fixed, so a picker never flashes up on a deployment that pins it.
   let catalog: ModelCatalog | undefined;
 
+  // Chat-history section state that must survive a re-render.
+  const historyCtx: HistoryTabContext = {
+    busy: false,
+    flash: undefined,
+    run: async (fn) => {
+      historyCtx.busy = true;
+      historyCtx.flash = undefined;
+      render();
+      try {
+        historyCtx.flash = await fn();
+      } catch {
+        /* the manager reports failures through its state */
+      } finally {
+        historyCtx.busy = false;
+        render();
+      }
+    },
+  };
+
   const render = () => {
     root.innerHTML = "";
     const tabs = el("div", "tabs");
@@ -117,7 +139,7 @@ export function mountAssistantSettingsPanel(
     const body = el("div", "tab-body");
     if (activeTab === "General") renderGeneral(body, storageKey, opts, str, catalog);
     else if (activeTab === "Voice") renderVoice(body, voiceKey, caps, str);
-    else renderData(body, opts.chatStore, str);
+    else renderData(body, opts.chatStore, str, opts.history, historyCtx);
     root.appendChild(body);
   };
 
@@ -146,7 +168,13 @@ export function mountAssistantSettingsPanel(
   // Voice rows never appeared until the modal was reopened. Listen to both.
   window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, onChange);
   window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, onChange);
+  const unsubscribeHistory = opts.history?.subscribe(() => {
+    if (activeTab === "Data") render();
+  });
+  // Opening settings is a natural moment to notice a sign-in or sign-out.
+  opts.history?.refresh().catch(() => {});
   return () => {
+    unsubscribeHistory?.();
     abort.abort();
     media?.removeEventListener?.("change", applyTheme);
     window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, onChange);
@@ -313,7 +341,152 @@ function renderVoice(root: HTMLElement, voiceKey: string, caps: VoiceCapabilitie
   }
 }
 
-function renderData(root: HTMLElement, chatStore?: ChatHistoryStore, s: WidgetStrings = DEFAULT_STRINGS) {
+interface HistoryTabContext {
+  busy: boolean;
+  /** One-line outcome of the last action (moved, deleted, failed). */
+  flash?: string;
+  /** Run an action with the controls disabled; its return value becomes the flash line. */
+  run: (fn: () => Promise<string | undefined>) => Promise<void>;
+}
+
+export interface HistoryMoveOffer {
+  from: DeviceChatSource;
+  text: string;
+  button: string;
+  /** Flash line after a full move; `{count}` is how many moved. */
+  done: string;
+}
+
+/**
+ * The "move chats" offers the Data tab shows. The user's own device chats are offered as
+ * theirs; chats made while signed out are offered only with wording that says so.
+ */
+export function historyMoveOffers(st: ChatHistoryState, s: WidgetStrings = DEFAULT_STRINGS): HistoryMoveOffer[] {
+  if (st.locked) return [];
+  const offers: HistoryMoveOffer[] = [];
+  if (st.mode === "account" && st.deviceChatCount > 0) {
+    offers.push({
+      from: "mine",
+      text: fmt(s.historyMoveOffer, { count: String(st.deviceChatCount) }),
+      button: s.historyMoveButton,
+      done: s.historyMoveDone,
+    });
+  }
+  if ((st.mode === "account" || st.mode === "device") && st.signedOutDeviceChatCount > 0) {
+    const toAccount = st.mode === "account";
+    offers.push({
+      from: "signed-out",
+      text: fmt(s.historyMoveSignedOutOffer, { count: String(st.signedOutDeviceChatCount) }),
+      button: toAccount ? s.historyMoveButton : s.historyMoveSignedOutToDeviceButton,
+      done: toAccount ? s.historyMoveDone : s.historyMoveSignedOutToDeviceDone,
+    });
+  }
+  return offers;
+}
+
+function renderHistory(root: HTMLElement, h: ChatHistoryControls, s: WidgetStrings, ctx: HistoryTabContext) {
+  const st = h.getState();
+  if (st.locked) return;
+  const section = el("div", "history");
+  section.appendChild(el("h3", "section-title", s.settingsHistory));
+
+  const group = el("div", "choices");
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-label", s.settingsHistory);
+  const options: Array<[ChatHistoryMode, string, string]> = [
+    ["account", s.historyModeAccount, s.historyModeAccountHint],
+    ["device", s.historyModeDevice, s.historyModeDeviceHint],
+    ["off", s.historyModeOff, s.historyModeOffHint],
+  ];
+  const choose = (mode: ChatHistoryMode) =>
+    ctx.run(async () => {
+      const now = h.getState();
+      let move = false;
+      if (mode === "account" && now.mode !== "account" && now.deviceChatCount > 0 && typeof confirm === "function") {
+        move = confirm(fmt(s.historyMovePrompt, { count: String(now.deviceChatCount) }));
+      }
+      await h.setMode(mode, { moveDeviceChats: move });
+      return undefined;
+    });
+  for (const [mode, label, hint] of options) {
+    const unavailable = mode === "account" && !!st.accountUnavailable;
+    const lab = el("label", `choice${unavailable ? " disabled" : ""}`);
+    const input = el("input") as HTMLInputElement;
+    input.type = "radio";
+    input.name = "pa-history-mode";
+    input.value = mode;
+    input.checked = st.mode === mode;
+    input.disabled = unavailable || ctx.busy;
+    input.onchange = () => void choose(mode);
+    const text = el("span", "choice-text");
+    text.append(el("span", "choice-label", label), el("span", "choice-hint", hint));
+    if (mode === "account" && st.accountUnavailable) {
+      const why = st.accountUnavailable === "signed-out" ? s.historyAccountSignedOut : s.historyAccountNoAdapter;
+      text.appendChild(el("span", "choice-hint choice-note", why));
+    } else if (mode === "account" && st.retentionMonths) {
+      text.appendChild(el("span", "choice-hint", fmt(s.historyRetention, { months: String(st.retentionMonths) })));
+    }
+    lab.append(input, text);
+    group.appendChild(lab);
+  }
+  section.appendChild(group);
+
+  if (st.status === "loading") {
+    section.appendChild(el("p", "hint", s.historyLoading));
+  } else if (st.status === "error") {
+    const p = el("p", "hint choice-note", st.error === "load" ? s.historyLoadFailed : s.historySaveFailed);
+    const retry = el("button", "btn btn-ghost btn-inline", s.historyRetry) as HTMLButtonElement;
+    retry.disabled = ctx.busy;
+    retry.onclick = () =>
+      void ctx.run(async () => {
+        await h.retry();
+        return undefined;
+      });
+    p.append(" ", retry);
+    section.appendChild(p);
+  }
+
+  for (const offer of historyMoveOffers(st, s)) {
+    const p = el("p", "hint", offer.text);
+    const move = el("button", "btn btn-ghost btn-inline", offer.button) as HTMLButtonElement;
+    move.disabled = ctx.busy;
+    move.onclick = () =>
+      void ctx.run(async () => {
+        const r = await h.moveDeviceChats({ from: offer.from });
+        return r.failed ? s.historyMoveFailed : fmt(offer.done, { count: String(r.moved) });
+      });
+    p.append(" ", move);
+    section.appendChild(p);
+  }
+  if (st.mode !== "account" && st.canDeleteAccountChats) {
+    section.appendChild(el("p", "hint", s.historyAccountKept));
+  }
+
+  const del = el("button", "btn btn-danger", s.historyDeleteAll) as HTMLButtonElement;
+  del.disabled = ctx.busy;
+  del.onclick = () => {
+    const question = st.canDeleteAccountChats ? s.historyDeleteAllConfirmAccount : s.historyDeleteAllConfirm;
+    if (typeof confirm === "function" && !confirm(question)) return;
+    void ctx.run(async () => ((await h.deleteAll()).ok ? s.historyDeleteDone : s.historyDeleteFailed));
+  };
+  section.appendChild(del);
+
+  if (ctx.flash) {
+    const flash = el("p", "hint flash", ctx.flash);
+    flash.setAttribute("role", "status");
+    section.appendChild(flash);
+  }
+  root.appendChild(section);
+}
+
+function renderData(
+  root: HTMLElement,
+  chatStore?: ChatHistoryStore,
+  s: WidgetStrings = DEFAULT_STRINGS,
+  history?: ChatHistoryControls,
+  historyCtx?: HistoryTabContext
+) {
+  if (history && historyCtx) renderHistory(root, history, s, historyCtx);
   const hint = el("p", "hint");
   hint.textContent = s.settingsDataHint;
   root.appendChild(hint);
@@ -404,6 +577,22 @@ const EXTRA_CSS = `
 .tab.active { background: var(--pa-bg-elevated); color: var(--pa-text); }
 .tab-body { min-height: 200px; }
 .btn { margin-top: 8px; display: inline-block; }
+.btn:disabled { opacity: .5; cursor: default; }
+.history { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--pa-border); }
+.section-title { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--pa-text); }
+.choices { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.choice {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; cursor: pointer;
+  border: 1px solid var(--pa-border); border-radius: 8px;
+}
+.choice.disabled { opacity: .65; cursor: default; }
+.choice input { margin-top: 3px; }
+.choice-label { display: block; color: var(--pa-text); }
+.choice-hint { display: block; margin-top: 2px; font-size: 12px; color: var(--pa-text-muted); }
+.choice-note { color: var(--pa-danger, #f87171); }
+.btn-inline { margin-top: 0; padding: 2px 6px; text-decoration: underline; }
+.btn-danger { background: transparent; color: var(--pa-danger, #f87171); border: 1px solid currentColor; }
+.flash { margin-top: 10px; }
 `;
 
 function escapeHtml(v: string) {
