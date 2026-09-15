@@ -8,6 +8,10 @@ Node dependencies — runs in the browser or Node.
   rejects any number no executed capability actually returned.
 - **`llm.txt` generator** — machine-readable manifest so other agents can discover
   and drive your assistant.
+- **Registration checks** — schemas a provider would reject throw
+  `CapabilitySchemaError` up front; `enabled` switches a capability off everywhere.
+- **Reply scrub and vocabulary** — `DEFAULT_SCRUB_RULES` keeps credentials and config
+  names out of replies; `vocabulary` tells the model the workspace's real values.
 
 ```ts
 import { Assistant, generateLlmTxt } from "@page-assistant/core";

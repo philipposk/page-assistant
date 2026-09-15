@@ -14,6 +14,14 @@ Most "AI on your site" widgets let the model *say* it did something. This one ca
 2. **Trusted rendering** — each capability's own `render()` produces the user-facing numbers. The model narrates *around* facts, it doesn't invent them.
 3. **Factual validator** — after the model writes its reply, any number that no executed capability actually returned is rejected and replaced with the trusted output. (Proven in `packages/core/test` — the model says "9000/100", the user sees the real "72".)
 
+And a few things that keep it accurate as your app changes:
+
+- **Only what is switched on.** `enabled: () => flags.exports` keeps a capability out of the tool list, forced routing and `llm.txt` while it is off, and refuses a stale call to it.
+- **Schemas checked once, at registration.** A schema a provider would reject throws `CapabilitySchemaError` at startup instead of failing every chat turn.
+- **The user's own words.** `vocabulary` tells the model the real tags, statuses and projects in this workspace plus a glossary, so loose wording maps onto real values. Best-effort and cached.
+- **No internals in replies.** Credentials, connection strings and environment variable names are scrubbed from every reply; add your own internal terms with `scrub`.
+- **A name of its own.** `assistantName` is who the assistant says it is; `appName` stays the product.
+
 ## Architecture
 
 ```

@@ -1,4 +1,9 @@
 import type { Capability } from "./types.js";
+import { isCapabilityEnabled } from "./registry.js";
+import { oneLine } from "./text.js";
+
+/** What other agents may see: exposed to agents, and available right now. */
+const advertised = (caps: Capability[]) => caps.filter((c) => c.exposeToAgents !== false && isCapabilityEnabled(c));
 
 export interface LlmTxtMeta {
   appName: string;
@@ -8,6 +13,8 @@ export interface LlmTxtMeta {
   agentEndpoint: string;
   /** Optional: where agents should POST improvement tickets after using the app. */
   feedbackEndpoint?: string;
+  /** Optional: the assistant's own name, so a client can show it instead of hard-coding one. */
+  assistantName?: string;
 }
 
 /**
@@ -16,13 +23,14 @@ export interface LlmTxtMeta {
  * both understand the app and talk to the assistant living on it.
  */
 export function generateLlmTxt(meta: LlmTxtMeta, caps: Capability[]): string {
-  const exposed = caps.filter((c) => c.exposeToAgents !== false);
+  const exposed = advertised(caps);
   const lines: string[] = [];
   lines.push(`# ${meta.appName}`);
   lines.push("");
   lines.push(`> ${meta.description}`);
   lines.push("");
-  lines.push(`This app ships a grounded in-page assistant. Other agents can drive it.`);
+  const assistantName = oneLine(meta.assistantName, 60);
+  lines.push(`This app ships a grounded in-page assistant${assistantName ? `, ${assistantName}` : ""}. Other agents can drive it.`);
   lines.push("");
   lines.push(`## Talk to the assistant`);
   lines.push("");
@@ -67,10 +75,14 @@ export function generateLlmTxt(meta: LlmTxtMeta, caps: Capability[]): string {
 export function generateActionsJson(meta: LlmTxtMeta, caps: Capability[]) {
   return {
     schemaVersion: "1.0",
-    app: { name: meta.appName, url: meta.appUrl, description: meta.description },
+    app: {
+      name: meta.appName,
+      url: meta.appUrl,
+      description: meta.description,
+      ...(meta.assistantName ? { assistantName: oneLine(meta.assistantName, 60) } : {}),
+    },
     agentEndpoint: meta.agentEndpoint,
-    capabilities: caps
-      .filter((c) => c.exposeToAgents !== false)
+    capabilities: advertised(caps)
       .map((c) => ({ name: c.name, description: c.description, parameters: c.parameters, confirm: !!c.confirm })),
   };
 }

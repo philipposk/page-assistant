@@ -2,6 +2,61 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## Unreleased
+
+Lessons from running a page assistant in production, generalised. No version bump.
+
+### Capabilities
+
+- **Schemas are checked at registration.** `new Assistant()` — and so `PageAssistant.init`
+  and `createServer` — throws a `CapabilitySchemaError` listing every problem: a
+  list-valued `"type"` (`["number", "null"]`), a name registered twice, a `required` key
+  missing from `properties`, or a name providers reject. The whole tool list goes out on
+  every turn, so one bad schema failed every message. The list-valued form also made the
+  argument check refuse every value for that field, and a duplicate name silently replaced
+  the first capability. Optional arguments already accept `null`.
+  `capabilitySchemaProblems()` returns the same list without throwing.
+- **`enabled`**, a boolean or a function re-read every turn. When off, the capability is
+  left out of the tool list, forced routing, `llm.txt` and the actions manifest, and a
+  stale call or `confirmAndRun` is refused instead of run. A flag that throws counts as
+  off. For feature flags, plan tiers and backends that may not be configured.
+
+### Routing
+
+- **Forced routing never picks a `confirm: true` capability.** "How many orders would
+  archiving touch?" was routed to the archive action and answered with a confirmation card.
+- **Keyword overlap matches at word starts.** "rate" no longer counts inside "generate",
+  nor "late" inside "template"; plurals and inflections still match.
+- **`forcedRouting`**: `false` turns the heuristic off, a function replaces it. A name
+  that is not a registered, enabled capability is ignored rather than forced.
+
+### What the assistant says
+
+- **Replies are scrubbed.** Every user-facing message — model prose, `render()` output,
+  the raw error of a failed `run()` — and error text sent back to the model passes through
+  `scrub` rules. `DEFAULT_SCRUB_RULES` covers connection strings, provider and cloud
+  tokens, JWTs, bearer headers, and environment variable names with a configuration
+  suffix (`…_API_KEY`, `…_URL`, `…_ENABLED`, …), so a status like `IN_PROGRESS` is left
+  alone. Extend it with your own internal terms, or pass `scrub: false`. The widget adds
+  `PLAIN_TEXT_SCRUB_RULES` because it renders replies as plain text, where `**` showed
+  literally. The system prompt gains a matching rule.
+- **`assistantName`**, separate from `appName`: the model introduces itself by it and
+  answers "who are you" with it. Carried in `llm.txt` and as `app.assistantName` in the
+  actions manifest; the widget uses it as the panel title when set.
+- **`vocabulary`**: the real values in the user's workspace (tags, statuses, projects)
+  and a glossary of their words, placed in the system prompt with a rule to map loose
+  wording onto the closest real value or ask. Static, or a loader cached per instance
+  (and per `key`) for 60 s by default. Best-effort: a loader that throws or takes longer
+  than 3 s is skipped for that turn and not cached. Values are one line each and the
+  block is bounded.
+
+### Upgrade notes
+
+- A host whose capabilities have one of the schema problems above now fails at startup
+  with the list, instead of misbehaving per turn.
+- Replies that contained one of the default scrub patterns now read differently;
+  `scrub: false` restores the old output.
+
 ## 0.5.1 — The rest of the translation, a themed panel, and an honest model picker
 
 Found by running 0.5.0 in a live Greek app. 0.5.0 translated the widget chrome and left
