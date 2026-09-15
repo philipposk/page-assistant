@@ -51,10 +51,26 @@ test("the default model is 'let the server choose'", () => {
 
 // --- the probe ------------------------------------------------------------
 
-test("fetchModelCatalog falls back to the built-in list when there is no server", async () => {
+test("no server means no picker", async () => {
   const c = await fetchModelCatalog(undefined);
-  assert.equal(c.fixed, false);
-  assert.ok(c.models.length > 1);
+  assert.equal(c.fixed, true);
+  assert.equal(modelPickerVisible({}, c), false);
+});
+
+test("a host proxy without /v1/models hides the picker", async () => {
+  // samos.6x7.gr: its own /api/pa route ignores the client's model, and the picker it got
+  // from the old fallback changed nothing.
+  await withGlobals({ fetch: async () => ({ ok: false, status: 404, json: async () => ({}) }) }, async () => {
+    const c = await fetchModelCatalog("https://app.example.com/api/pa");
+    assert.equal(c.fixed, true);
+    assert.equal(modelPickerVisible({}, c), false);
+  });
+});
+
+test("an answer with no models is not a choice", async () => {
+  await withGlobals({ fetch: async () => ({ ok: true, json: async () => ({}) }) }, async () => {
+    assert.equal(modelPickerVisible({}, await fetchModelCatalog("https://api.example.com")), false);
+  });
 });
 
 test("fetchModelCatalog reports a server that pins its model", async () => {
@@ -85,10 +101,10 @@ test("an older server that only returns {models} still gets a working picker", a
   );
 });
 
-test("a broken probe never breaks the panel", async () => {
+test("a broken probe never breaks the panel, and shows no picker", async () => {
   await withGlobals({ fetch: async () => { throw new Error("offline"); } }, async () => {
     const c = await fetchModelCatalog("https://api.example.com");
-    assert.equal(c.fixed, false);
+    assert.equal(c.fixed, true);
     assert.ok(c.models.length > 1);
   });
 });

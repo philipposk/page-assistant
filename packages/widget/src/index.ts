@@ -73,7 +73,8 @@ export interface PageAssistantConfig {
    *
    * `"auto"` (the default) asks the server: `GET /v1/models` reports whether the model is
    * fixed server-side and which models it actually holds keys for, and the picker is
-   * hidden unless there is a real choice to make.
+   * hidden unless there is a real choice to make. A server that doesn't answer (your own
+   * proxy route, usually) gets no picker — since 0.6.0; before, it got the built-in list.
    *
    * `false` hides it outright — use it when your own server pins the model and ignores
    * what the client asks (so a visitor cannot upgrade themselves onto a costlier one).
