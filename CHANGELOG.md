@@ -50,12 +50,42 @@ Lessons from running a page assistant in production, generalised. No version bum
   than 3 s is skipped for that turn and not cached. Values are one line each and the
   block is bounded.
 
+### Chat history
+
+- **Three modes, chosen by the user in the Data tab:** `"account"` (saved through a host
+  adapter, synced across devices), `"device"` (localStorage, the default and the old
+  behaviour) and `"off"` (this page only). New init options: `chatHistoryMode` (the default
+  until the user picks), `chatHistoryAdapter`, `chatHistoryFallbackMode` and
+  `onChatHistoryError`; `PageAssistant.refreshChatHistory()` after a sign-in or sign-out.
+  The choice is remembered in the browser per signed-in user.
+- **`ChatHistoryAdapter`**, implemented by the host: `list`, `get`, `save`, `delete`,
+  `deleteAll`, and optionally `currentUserId`, `saveMany`, `retentionMonths`. The widget never
+  talks to a database. Without an adapter, or with nobody signed in, account falls back and
+  settings says why.
+- **Moving and leaving.** Switching to account offers to move this browser's chats (removed
+  locally only once saved). Leaving account deletes nothing; "Delete all my chats" empties
+  the browser and, when someone is signed in, the account.
+- **Safe by construction:** empty chats are never saved; a chat listed without messages is
+  fetched before it is saved, so a rename cannot blank it; writes waiting when the user
+  signs out or changes are dropped, never sent as the next person.
+- **Reference Supabase adapter** (`supabaseChatHistoryAdapter`) and migration
+  (`packages/widget/supabase/assistant_chats.sql`, now shipped in the package): row-level
+  security with every policy `auth.uid() = user_id`, no anon access, timestamps that cannot
+  be set in the future, and a 12-month inactivity sweep scheduled with pg_cron when it is
+  enabled, with a documented fallback.
+- 26 new strings for the history section; `ChatHistoryStore` gains memory-only storage and
+  an `onChange` feed.
+
 ### Upgrade notes
 
 - A host whose capabilities have one of the schema problems above now fails at startup
   with the list, instead of misbehaving per turn.
 - Replies that contained one of the default scrub patterns now read differently;
   `scrub: false` restores the old output.
+- Chat history is unchanged unless you pass the new options: still `"device"`, same
+  storage key. The Data tab now shows the history choice, and its hint default changed to
+  "Export your chats to a file, or import a backup." (the old one claimed data never left
+  the browser, which account mode makes untrue). A translated `settingsDataHint` is kept.
 
 ## 0.5.1 — The rest of the translation, a themed panel, and an honest model picker
 

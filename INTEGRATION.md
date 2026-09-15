@@ -112,6 +112,36 @@ On the server, one `Assistant` serves one `/v1/agent` request, so the vocabulary
 per request. If you build a long-lived `Assistant` that serves several workspaces, return
 the workspace id from `vocabulary.key`.
 
+**Chat history in the user's account** (optional). By default chats stay in the browser
+(`"device"`). To sync them across the user's devices, give the widget an adapter that reads
+and writes the signed-in user's chats with their own credentials:
+
+```typescript
+import { supabaseChatHistoryAdapter } from "@page-assistant/widget";
+
+PageAssistant.init({
+  // ...
+  chatHistoryMode: "account",       // default until the user picks; "device" for sensitive data
+  chatHistoryAdapter: supabaseChatHistoryAdapter(supabase, { app: "my-app" }),
+});
+// Call after sign-in and sign-out:
+PageAssistant.refreshChatHistory();
+```
+
+1. Apply [`packages/widget/supabase/assistant_chats.sql`](./packages/widget/supabase/assistant_chats.sql)
+   as a migration in your own project. It creates `assistant_chats` with row-level security
+   (each user sees only their rows) and schedules the 12-month inactivity sweep with pg_cron
+   — or tells you to run it from your own daily job.
+2. Pass the **user-session** client, never a service-role client. The adapter's
+   `currentUserId()` reads the session, so logged-out visitors fall back to
+   `chatHistoryFallbackMode` (`"device"` unless you say `"off"`).
+3. Not on Supabase? Implement `ChatHistoryAdapter` (`list`, `get`, `save`, `delete`,
+   `deleteAll`, optional `currentUserId`) against your API; every call must be scoped to
+   the signed-in user on the server.
+
+Users switch between account, device and off in the Data tab, and can delete one chat or all
+of them. For sensitive data, keep `chatHistoryMode: "device"` and let users opt in to account.
+
 **Settings page embed** (optional):
 
 ```typescript
@@ -173,6 +203,8 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
 - [ ] Test: ask assistant to do something it shouldn't — it must refuse or ask to confirm
 - [ ] Parity list: every action a user can take in your UI maps to a capability, or is
       noted as browser-only (downloads, payments, OAuth)
+- [ ] Account chat history (if used): migration applied, RLS on, retention sweep scheduled,
+      adapter built on the user-session client, `refreshChatHistory()` called on sign-in/out
 - [ ] Your internal names (databases, services, old product names) added to `scrub`:
       `[...DEFAULT_SCRUB_RULES, ["InternalDB", "our records"]]`. Credentials, connection
       strings and environment variable names are scrubbed by default

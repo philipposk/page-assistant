@@ -207,6 +207,50 @@ values are ignored rather than blanking a label, and a key this version does not
 ignored rather than throwing — so a host written against an older SDK keeps English for
 whatever was added since.
 
+## Chat history: account, device or off
+
+Users choose where their chats are kept, in the settings panel's Data tab:
+
+| Mode | Where chats live | Survives a reload | Follows the user to other devices |
+|---|---|---|---|
+| `"account"` | Your backend, through an adapter you supply | Yes | Yes |
+| `"device"` (default) | This browser's `localStorage` — what every earlier version did | Yes | No |
+| `"off"` | Memory, for this page only | No | No |
+
+```js
+import { PageAssistant, supabaseChatHistoryAdapter } from "@page-assistant/widget";
+
+PageAssistant.init({
+  serverUrl, capabilities,
+  chatHistoryMode: "account",            // the default until the user picks; "device" if omitted
+  chatHistoryAdapter: supabaseChatHistoryAdapter(supabase, { app: "my-app" }),
+  chatHistoryFallbackMode: "device",     // while account can't be used (signed out); or "off"
+  onChatHistoryError: (e) => console.warn(e),
+});
+
+// After your app signs a user in or out:
+PageAssistant.refreshChatHistory();
+```
+
+- **The widget never talks to a database.** In account mode it calls your
+  `ChatHistoryAdapter` — `list`, `get`, `save`, `delete`, `deleteAll`, and optionally
+  `currentUserId`, `saveMany` and `retentionMonths` — which acts as the signed-in user.
+  `supabaseChatHistoryAdapter()` is a reference implementation; its migration, with
+  row-level security and a 12-month inactivity sweep, is
+  [`packages/widget/supabase/assistant_chats.sql`](./packages/widget/supabase/assistant_chats.sql).
+- **Signed out, or no adapter:** account falls back to `chatHistoryFallbackMode` and the
+  settings panel says why. Signing out drops account chats from the page; a write not yet
+  sent is dropped rather than saved as whoever signs in next.
+- **The user's choice is remembered in this browser, per signed-in user**, so a second
+  person signing in on a shared browser gets your default, not the first person's choice.
+- **Switching to account offers to move this device's chats** into the account; a moved chat
+  is removed from the browser only once the account has it. **Leaving account deletes
+  nothing** — the panel notes the chats are still saved and offers "Delete all my chats",
+  which empties this browser and, when someone is signed in, the account.
+- Empty chats are never saved, and writes are batched a moment after each change. A list
+  may leave out messages; a chat is fetched in full before it is opened, forked or saved.
+- `disableChatHistory: true` still turns history off with nothing to choose.
+
 ## Choosing the model
 
 The settings panel only offers a model picker when there is a real choice to make.
