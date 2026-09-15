@@ -350,7 +350,7 @@ version tag:
 ```bash
 # bump every package to the new version first (root + all 5 packages + internal pins),
 # commit, then:
-git tag v0.6.0 && git push --tags
+git tag v0.6.1 && git push --tags
 ```
 
 The workflow builds, typechecks, tests, and `npm publish`es core → widget → server →

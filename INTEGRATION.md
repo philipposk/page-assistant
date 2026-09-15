@@ -20,6 +20,15 @@ git submodule add https://github.com/philipposk/page-assistant.git vendor/page-a
 npm install @page-assistant/widget @page-assistant/server @page-assistant/core
 ```
 
+**Script tag / vendored bundle** (no bundler): copy
+`packages/widget/dist/page-assistant.global.js` (after `npm run build`) into your app, e.g.
+`public/vendor/`, and load it with a `<script>`. `window.PageAssistant` then holds `init` and
+every export of the module, so wherever this guide imports a name from
+`@page-assistant/widget`, call it as `PageAssistant.<name>`: `PageAssistant.capability`,
+`PageAssistant.markdownLink`, `PageAssistant.supabaseChatHistoryAdapter`,
+`PageAssistant.DEFAULT_SCRUB_RULES`. Before 0.6.1 the global had only `init`, `configure`,
+`refreshChatHistory`, `destroy` and the settings functions.
+
 ## 2. Backend routes (keys stay server-side)
 
 Mount or reimplement these endpoints. **Every spend route must require your app's user auth** (session, JWT, API key scoped to user).
@@ -81,7 +90,7 @@ your own results page:
 
 ```typescript
 import { capability, markdownLink } from "@page-assistant/widget";
-// Script-tag bundle: PageAssistantBundle.markdownLink
+// Script-tag bundle: PageAssistant.markdownLink
 
 capability({
   name: "find_places",
@@ -176,6 +185,24 @@ PageAssistant.init({
 // Call after sign-in and sign-out:
 PageAssistant.refreshChatHistory();
 ```
+
+From the script-tag bundle the adapter is on the global (0.6.1 and later). `supabase` is the
+page's own supabase-js client:
+
+```javascript
+PageAssistant.init({
+  // ...
+  chatHistoryMode: "device",
+  chatHistoryAdapter: PageAssistant.supabaseChatHistoryAdapter(supabase, {
+    table: "assistant_chats", // the default; pass yours if you renamed the table
+    app: "my-app",
+  }),
+});
+```
+
+Without an adapter the widget raises no error: it keeps chats on the device and its settings
+say "Saving to your account isn't available here." If a signed-in user sees that, the widget
+got no adapter.
 
 1. Apply [`packages/widget/supabase/assistant_chats.sql`](./packages/widget/supabase/assistant_chats.sql)
    as a migration in your own project. It creates `assistant_chats` with row-level security
