@@ -8,7 +8,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist", "LICENSE", "README.md"],
+  "files": ["dist", "supabase", "LICENSE", "README.md"],
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/widget" },
   "scripts": {
