@@ -428,7 +428,13 @@ class PageAssistantController {
       onSettings: () =>
         cfg.onSettings?.() ??
         (cfg.useExtendedSettings !== false
-          ? openAssistantSettingsModal(settingsUiOpts)
+          ? // The extended modal keeps two stores apart. It used to get the voice key as its
+            // `storageKey`, so theme, model and analytics were saved where nothing read them.
+            openAssistantSettingsModal({
+              ...settingsUiOpts,
+              storageKey: this.assistantSettingsKey,
+              voiceStorageKey: this.settingsKey,
+            })
           : openVoiceSettingsModal(settingsUiOpts)),
       onTtsToggle: (on) => {
         this.ttsEnabled = on;

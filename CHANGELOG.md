@@ -45,6 +45,17 @@ routing, scrubbing, account chat history). All packages bumped `0.5.1 → 0.6.0`
 - The system prompt gains one rule: keep links from capability results exactly as written,
   never make one up.
 
+### The settings General tab works
+
+- **Theme, model, sidebar and analytics choices did nothing.** The widget opened its
+  settings modal with the voice settings key as the modal's `storageKey`, so those choices
+  were saved under `page_assistant_voice_settings` while the widget reads
+  `page_assistant_settings`. The modal re-themed itself, which made it look as if it
+  worked; the chat panel, the model sent and the analytics switch never changed. The modal
+  now gets both keys (`storageKey` and `voiceStorageKey`), and a host's custom
+  `settingsStorageKey` now reaches the Voice tab too. Choices saved by earlier versions
+  under the wrong key are not carried over; users pick again.
+
 ### Voice off means no voice controls
 
 - With `voice: false` the widget still showed the mic and read-aloud buttons and the
