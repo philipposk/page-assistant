@@ -13,6 +13,7 @@ import type {
 import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
 import { oneLine } from "./text.js";
 import { DEFAULT_SCRUB_RULES, scrubText, type ScrubRule } from "./scrub.js";
+import { linkText } from "./links.js";
 import { VocabularyResolver, type VocabularyOption } from "./vocabulary.js";
 
 const MAX_TOOL_ROUNDS = 6;
@@ -128,6 +129,7 @@ export class Assistant {
       `- For capabilities marked confirm, describe what will happen and wait for the user to approve before calling.`,
       `- Be concise. Prefer doing the action over describing it.`,
       `- Never mention environment variables, API routes, internal system names or capability names to the user; describe things in the user's terms.`,
+      `- Keep markdown links from capability results exactly as written, e.g. [label](/path). Never make up a link.`,
       `Current page: ${page.title ?? page.path} (${page.path}).`,
     ];
     if (page.state && Object.keys(page.state).length) {
@@ -466,10 +468,12 @@ export function validateFactualText(
     return { text: joined, wasCorrected: joined !== text };
   }
 
+  // Links: a label is text like any other and its numbers are checked; an href is where a
+  // link goes, not a claim, so its digits neither vouch for a number nor count as one.
   const trusted: number[] = [];
   const trustedNumbers = new Set<string>();
   for (const r of rendered)
-    for (const n of r.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
+    for (const n of linkText(r).replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
       trustedNumbers.add(n);
       trusted.push(Number(n));
     }
@@ -485,9 +489,10 @@ export function validateFactualText(
 
   // Numbers that live inside a URL, path, or identifier-like token are structural, not
   // factual claims — collect them so we don't flag "gpt-4o", "/v1/", "ISO-8601", etc.
-  const structural = collectStructuralNumbers(text);
+  const prose = linkText(text);
+  const structural = collectStructuralNumbers(prose);
 
-  const claimedNumbers = text.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
+  const claimedNumbers = prose.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
   const invented = claimedNumbers.filter(
     (n) => !isHonest(n) && Number(n) > 4 && !isWhitelisted(n, structural)
   );

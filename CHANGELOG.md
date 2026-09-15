@@ -2,9 +2,54 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
-## Unreleased
+## 0.6.0 — Links in replies
 
-Lessons from running a page assistant in production, generalised. No version bump.
+Replies can now carry clickable links, so "Try Aphrodite Garden, Yamas Tavern… and 68 more"
+opens each place's page and the app's own results page. Also released here: the lessons from
+running a page assistant in production that were waiting under "Unreleased" (capabilities,
+routing, scrubbing, account chat history). All packages bumped `0.5.1 → 0.6.0` together.
+
+### Links in replies
+
+- **Syntax: markdown links, `[label](href)`**, in any reply text — a capability's
+  `render()` (including `verbatim: true`) or model prose. A label may hold balanced
+  brackets; `\[` `\]` escape brackets in a label, `\(` `\)` parentheses in an href; an href
+  has no whitespace and may hold balanced parentheses (`/wiki/Samos_(island)`). An image,
+  `![alt](src)`, shows as its alt text.
+- **Only safe links are clickable.** An `<a>` is made only for a same-origin path — exactly
+  one leading `/`, no scheme, no whitespace, control characters or backslashes (browsers
+  turn `/\evil.com` and `/<tab>/evil.com` into `//evil.com`). `javascript:` and `data:` are
+  never allowed. **`linkOrigins`** (new init option) also allows absolute http(s) URLs on
+  listed origins. Anything else shows its label as plain text. Nodes are built with
+  `textContent`, never `innerHTML`.
+- **Clicking** calls the new **`onNavigate(href)`** init option when given (an SPA router's
+  push), else `window.location.assign(href)`, which is also the fallback if `onNavigate`
+  throws or rejects. On screens ≤520px the panel closes after the click so the page is
+  visible; reopening shows the same conversation. On wider screens a full page load reopens
+  the panel on the new page (a `sessionStorage` flag, valid 30 s). Modifier and middle clicks
+  are left to the browser (new tab). Links are focusable; Enter follows them.
+- **Scrubbing keeps links intact.** `scrubText` rewrites the text around links and each
+  label, never an href. A link whose href a rule would change (a token in a query string,
+  an internal name in a path) is shown as its label only. `PLAIN_TEXT_SCRUB_RULES` are
+  formatting and don't judge hrefs, so `/a__b__c` keeps its link.
+- **The number check reads labels, not hrefs.** Digits in a label are checked like any
+  text; digits in an href neither vouch for a number nor count as a claim, so a link can
+  never cause `wasCorrected`.
+- **Speech reads the labels only.** Chat history (device and account) stores the raw text,
+  so links come back when a chat is reopened. Copying a selection copies the label text.
+- **Styling:** a new `--pa-link` theme token (`#4ade80` dark, `#047857` light), underlined,
+  with a focus ring.
+- **Helpers** exported from core and the widget: `markdownLink(label, href)` (always
+  round-trips, escaping included), `parseLinks`, `linkText`, `safeLinkHref`,
+  `escapeLinkText`, `rewriteAroundLinks`; the widget adds `renderReply` and `followLink`.
+- The system prompt gains one rule: keep links from capability results exactly as written,
+  never make one up.
+
+### Voice off means no voice controls
+
+- With `voice: false` the widget still showed the mic and read-aloud buttons and the
+  settings Voice tab. Tapping either button only said "Voice is off for this app." Now
+  neither button nor the tab is rendered.
 
 ### Capabilities
 
@@ -102,6 +147,9 @@ Lessons from running a page assistant in production, generalised. No version bum
 
 ### Upgrade notes
 
+- Replies that already contained markdown links now show them as links (safe ones) or as
+  their labels (the rest), where they used to show the raw `[label](href)`. A literal `\[`
+  or `\]` in a reply now shows as a bracket.
 - A host whose capabilities have one of the schema problems above now fails at startup
   with the list, instead of misbehaving per turn.
 - Replies that contained one of the default scrub patterns now read differently;

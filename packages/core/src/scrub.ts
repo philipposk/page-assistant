@@ -8,6 +8,8 @@
  * final text.
  */
 
+import { rewriteAroundLinks } from "./links.js";
+
 /**
  * `[pattern, replacement]`. A string pattern matches as a whole word, case-insensitively;
  * a RegExp is used as given (made global). The replacement may use `$1`-style groups.
@@ -53,13 +55,24 @@ function compile(pattern: string | RegExp): RegExp {
   return pattern.global ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
 }
 
-/** Apply `rules` in order. */
+/**
+ * Apply `rules` in order. Links (`[label](href)`) survive: rules rewrite the text around
+ * them and each label, never an href. A link whose href a rule would change is reduced to
+ * its label, so a credential or internal name in a URL is never shown or followed. The
+ * PLAIN_TEXT_SCRUB_RULES are formatting, not secrets, and don't judge hrefs: a slug like
+ * `/a__b__c` keeps its link.
+ */
 export function scrubText(text: string, rules: ScrubRule[]): string {
-  let out = text;
-  for (const [pattern, replacement] of rules) {
-    const re = compile(pattern);
-    re.lastIndex = 0;
-    out = out.replace(re, replacement);
-  }
-  return out;
+  const compiled = rules.map((rule) => ({ re: compile(rule[0]), replacement: rule[1], formatting: PLAIN_TEXT_SCRUB_RULES.includes(rule) }));
+  const run = (s: string, all: boolean) => {
+    let out = s;
+    for (const { re, replacement, formatting } of compiled) {
+      if (!all && formatting) continue;
+      re.lastIndex = 0;
+      out = out.replace(re, replacement);
+    }
+    return out;
+  };
+  const apply = (s: string) => run(s, true);
+  return rewriteAroundLinks(text, apply, (href) => run(href, false)) ?? apply(text);
 }
