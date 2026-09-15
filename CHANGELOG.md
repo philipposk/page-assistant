@@ -81,11 +81,22 @@ Lessons from running a page assistant in production, generalised. No version bum
 - **Safe by construction:** empty chats are never saved; a chat listed without messages is
   fetched before it is saved, so a rename cannot blank it; writes waiting when the user
   signs out or changes are dropped, never sent as the next person.
+- **A reply in flight never lands in the next person's chats.** The question and its answer
+  used to be written wherever the page pointed when the answer arrived: after a sign-out,
+  the signed-out chats the next visitor sees; after another account signed in, that
+  account. Now the widget notes the chat and the signed-in user when it sends, and drops a
+  reply (or its error, and a confirmed action's result) if either changed meanwhile —
+  including when the user opened another chat. Nothing is pushed, saved or shown; a toast
+  (`historyReplyDiscarded`, one new string) says a reply was discarded.
+- **`offerSignedOutChats`** (default `true`). `false` never offers, counts or moves the chats
+  made in the browser while signed out: for apps used on shared computers.
 - **Reference Supabase adapter** (`supabaseChatHistoryAdapter`) and migration
   (`packages/widget/supabase/assistant_chats.sql`, now shipped in the package): row-level
   security with every policy `auth.uid() = user_id`, no anon access, timestamps that cannot
   be set in the future, and a 12-month inactivity sweep scheduled with pg_cron when it is
-  enabled, with a documented fallback.
+  enabled, with a documented fallback. Rows are keyed on `(user_id, app, id)` and the
+  adapter upserts on exactly that, so apps sharing the table never overwrite each other's
+  chat with the same id (the first draft keyed on `(user_id, id)`).
 - 26 new strings for the history section; `ChatHistoryStore` gains memory-only storage and
   an `onChange` feed.
 
@@ -102,7 +113,17 @@ Lessons from running a page assistant in production, generalised. No version bum
 - Chats saved by earlier versions stay under the plain `storageKey`, now the signed-out slot.
   Without an adapter, or with one that has no `currentUserId`, nothing moves. With one that
   names users, a signed-in user no longer sees those chats as theirs; settings offers to add
-  them, worded as signed-out chats.
+  them, worded as signed-out chats (unless `offerSignedOutChats: false`).
+- Applied an earlier copy of `assistant_chats.sql` (primary key `(user_id, id)`)? Re-run the
+  updated file — it re-keys the table only when it finds the old key — or add a migration:
+
+  ```sql
+  alter table public.assistant_chats drop constraint assistant_chats_pkey;
+  alter table public.assistant_chats add constraint assistant_chats_pkey primary key (user_id, app, id);
+  ```
+
+  Existing rows keep their `app` (default `''`), so nothing is lost. Update the adapter at the
+  same time: an old adapter's `onConflict: "user_id,id"` has no matching key afterwards.
 
 ## 0.5.1 — The rest of the translation, a themed panel, and an honest model picker
 

@@ -131,7 +131,10 @@ PageAssistant.refreshChatHistory();
 1. Apply [`packages/widget/supabase/assistant_chats.sql`](./packages/widget/supabase/assistant_chats.sql)
    as a migration in your own project. It creates `assistant_chats` with row-level security
    (each user sees only their rows) and schedules the 12-month inactivity sweep with pg_cron
-   — or tells you to run it from your own daily job.
+   — or tells you to run it from your own daily job. Rows are keyed on `(user_id, app, id)`,
+   so several apps (the adapter's `app` option) can share the table without overwriting
+   each other's chats. Applied an earlier copy keyed on `(user_id, id)`? Re-run the file, or
+   add a migration with the two `alter table` lines in the CHANGELOG's upgrade notes.
 2. Pass the **user-session** client, never a service-role client. The adapter's
    `currentUserId()` reads the session, so logged-out visitors fall back to
    `chatHistoryFallbackMode` (`"device"` unless you say `"off"`).
@@ -153,6 +156,17 @@ tell people apart: all device chats share the one signed-out slot and are never 
 anyone as theirs. This keeps people apart in the widget; it is not encryption — anyone with
 the browser profile can read localStorage. On a shared machine, `"off"` or `"account"` is
 the safe choice for sensitive data.
+
+If your app runs on shared computers (a front desk, a kiosk, a family laptop), also pass
+`offerSignedOutChats: false`. Whoever used the browser while signed out is often not the
+person who signs in next, so the widget then never offers, counts or moves the signed-out
+chats — not into the account, not into the user's own device chats. They stay in the
+signed-out slot. The default, `true`, keeps the offer.
+
+A reply that is still loading when someone signs out or another account signs in is
+dropped, not saved into whatever is on screen by then; the same goes for a reply to a chat
+the user has left for another one. Call `refreshChatHistory()` as soon as your app's auth
+state changes so the widget notices promptly.
 
 **Moving and retention.** Moving device chats into the account counts as activity: each moved
 chat is saved with `updatedAt` = now (`createdAt` keeps its real age), so a chat older than
@@ -221,7 +235,8 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
       noted as browser-only (downloads, payments, OAuth)
 - [ ] Account chat history (if used): migration applied, RLS on, retention sweep scheduled,
       adapter built on the user-session client with `currentUserId()`,
-      `refreshChatHistory()` called on sign-in/out
+      `refreshChatHistory()` called on sign-in/out, `offerSignedOutChats: false` if the app
+      runs on shared computers
 - [ ] Your internal names (databases, services, old product names) added to `scrub`:
       `[...DEFAULT_SCRUB_RULES, ["InternalDB", "our records"]]`. Credentials, connection
       strings and environment variable names are scrubbed by default

@@ -236,16 +236,22 @@ PageAssistant.refreshChatHistory();
   `ChatHistoryAdapter` — `list`, `get`, `save`, `delete`, `deleteAll`, and optionally
   `currentUserId`, `saveMany` and `retentionMonths` — which acts as the signed-in user.
   `supabaseChatHistoryAdapter()` is a reference implementation; its migration, with
-  row-level security and a 12-month inactivity sweep, is
+  row-level security, a 12-month inactivity sweep and chats keyed on `(user_id, app, id)`
+  so apps can share the table, is
   [`packages/widget/supabase/assistant_chats.sql`](./packages/widget/supabase/assistant_chats.sql).
 - **Signed out, or no adapter:** account falls back to `chatHistoryFallbackMode` and the
   settings panel says why. Signing out drops account chats from the page; a write not yet
   sent is dropped rather than saved as whoever signs in next.
+- **A reply still loading when the chat changes is dropped.** If someone signs out, another
+  account signs in, or another chat is opened before the answer arrives, the question and
+  answer are neither shown nor saved: never into the signed-out chats the next visitor sees,
+  never into the next person's account. A short notice says a reply was discarded.
 - **The user's choice is remembered in this browser, per signed-in user**, so a second
   person signing in on a shared browser gets your default, not the first person's choice.
 - **Device chats are kept per person** when the adapter's `currentUserId()` names the user:
   each person sees only their own, and chats made while signed out are offered to a
-  signed-in user only as exactly that. See [INTEGRATION.md](./INTEGRATION.md).
+  signed-in user only as exactly that. On shared computers, `offerSignedOutChats: false`
+  stops them being offered at all. See [INTEGRATION.md](./INTEGRATION.md).
 - **Switching to account offers to move the user's own device chats** into the account; a
   moved chat is removed from the browser only once the account has it, and the move counts
   as activity for retention. **Leaving account deletes
