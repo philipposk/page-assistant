@@ -2,6 +2,12 @@
 //
 // The host picks the default and may supply an adapter for "account". The user can change
 // the mode in settings; that choice is remembered in this browser, per signed-in user.
+//
+// "device" chats are kept per person too. When the adapter says who is signed in
+// (`currentUserId()`), their device chats live under `${storageKey}:user:${id}`. The plain
+// `storageKey` — what every earlier version wrote — is the signed-out slot: chats made while
+// nobody was signed in, by whoever used this browser. Nobody is shown another person's slot,
+// and signed-out chats are only ever offered to a signed-in user as exactly that.
 
 import { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY, type ChatSession } from "./chatHistory.js";
 import { AccountHistorySync, type AccountSyncStatus, type ChatHistoryAdapter } from "./chatHistoryAccount.js";
@@ -21,6 +27,25 @@ export type AccountUnavailableReason = "no-adapter" | "signed-out";
 
 export function isChatHistoryMode(v: unknown): v is ChatHistoryMode {
   return v === "account" || v === "device" || v === "off";
+}
+
+/**
+ * Which device chats to move: `"mine"` — the signed-in user's own; `"signed-out"` — chats
+ * made on this device while nobody was signed in (anyone using the browser may have made them).
+ */
+export type DeviceChatSource = "mine" | "signed-out";
+
+/**
+ * Where this browser keeps a person's "device" chats. A known user gets their own key; nobody
+ * signed in (null), or a user the adapter can't name (""), uses `storageKey` itself — the
+ * signed-out slot, which is also where every earlier version kept chats.
+ */
+export function deviceStorageKey(storageKey: string, userId: string | null | undefined): string {
+  return userId ? `${storageKey}:user:${userId}` : storageKey;
+}
+
+function countLocal(key: string): number {
+  return ChatHistoryStore.readLocal(key).sessions.filter((s) => s.messages?.length).length;
 }
 
 export interface ResolveChatHistoryModeInput {
@@ -115,8 +140,16 @@ export interface ChatHistoryState {
   status: "idle" | "loading" | "saving" | "error";
   /** What failed, while `status` is "error". */
   error?: "load" | "save";
-  /** Chats with messages saved in this browser. */
+  /**
+   * The current user's own chats with messages saved in this browser. 0 while the widget
+   * can't tell who that is (an adapter without `currentUserId`, or not checked yet).
+   */
   deviceChatCount: number;
+  /**
+   * Chats made in this browser while signed out, when the current view doesn't show them:
+   * a signed-in user may choose to move them, told plainly whose they may be.
+   */
+  signedOutDeviceChatCount: number;
   /** An adapter exists and someone is signed in, so their saved chats can be deleted. */
   canDeleteAccountChats: boolean;
   retentionMonths?: number;
@@ -128,10 +161,16 @@ export interface ChatHistoryControls {
   subscribe(listener: () => void): () => void;
   /** Re-check who is signed in and apply the mode that follows. */
   refresh(): Promise<void>;
-  /** Choose a mode. `moveDeviceChats` also moves this browser's chats into the account. */
+  /** Choose a mode. `moveDeviceChats` also moves the user's own device chats into the account. */
   setMode(mode: ChatHistoryMode, opts?: { moveDeviceChats?: boolean }): Promise<void>;
-  /** In account mode: save this browser's chats to the account, then remove them from the browser. */
-  moveDeviceChats(): Promise<{ moved: number; failed: number }>;
+  /**
+   * Move device chats, then remove them from where they were. In account mode, into the
+   * account: `from: "mine"` (default) the user's own, `"signed-out"` the signed-out slot.
+   * In device mode, `"signed-out"` moves the signed-out slot into the user's own. A move
+   * counts as activity: each moved chat's `updatedAt` becomes now, so account retention
+   * starts from the move rather than deleting old chats straight after they arrive.
+   */
+  moveDeviceChats(opts?: { from?: DeviceChatSource }): Promise<{ moved: number; failed: number }>;
   /** Delete every chat: in this browser, in memory, and in the account when one is reachable. */
   deleteAll(): Promise<{ ok: boolean }>;
   /** Retry a failed load or save. */
@@ -203,8 +242,12 @@ export class ChatHistoryManager implements ChatHistoryControls {
     });
     this.mode = r.mode;
     this.unavailable = r.unavailable;
-    // Only "device" touches localStorage. Account mode loads into memory.
-    this.store = new ChatHistoryStore(this.storageKey, { persist: this.mode === "device" });
+    // Only "device" touches localStorage; account mode loads into memory. When the adapter
+    // names users, even "device" waits for `start()`: the hint above may be the previous
+    // person, and their chats must not flash up for whoever is here now.
+    this.store = new ChatHistoryStore(this.storageKey, {
+      persist: this.mode === "device" && !this.adapter?.currentUserId,
+    });
 
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
       this.onPageHide = () => void this.sync?.flush();
@@ -226,9 +269,9 @@ export class ChatHistoryManager implements ChatHistoryControls {
     return this.enqueue(() => this.apply({ choose: mode, move: !!opts.moveDeviceChats }));
   }
 
-  moveDeviceChats(): Promise<{ moved: number; failed: number }> {
+  moveDeviceChats(opts: { from?: DeviceChatSource } = {}): Promise<{ moved: number; failed: number }> {
     return this.enqueue(async () => {
-      const r = await this.moveNow();
+      const r = await this.moveNow(opts.from === "signed-out" ? "signed-out" : "mine");
       this.emitState();
       return r;
     });
@@ -247,7 +290,9 @@ export class ChatHistoryManager implements ChatHistoryControls {
           this.report(e);
         }
       }
-      ChatHistoryStore.clearLocal(this.storageKey);
+      // This person's device chats only: not another user's slot, and not the signed-out
+      // slot while someone is signed in.
+      if (this.userId !== undefined || !this.adapter?.currentUserId) ChatHistoryStore.clearLocal(this.deviceKey());
       // If the account could not be emptied, keep showing what it still holds.
       if (ok || this.mode !== "account") this.store.clearAll();
       this.emitReplaced();
@@ -278,6 +323,9 @@ export class ChatHistoryManager implements ChatHistoryControls {
   }
 
   getState(): ChatHistoryState {
+    const own = this.ownDeviceKey();
+    const shown = this.store.persistsLocally ? this.store.localKey : null;
+    const signedOutHidden = this.userId !== undefined && own !== this.storageKey && shown !== this.storageKey;
     return {
       mode: this.mode,
       chosen: this.chosen(),
@@ -285,9 +333,8 @@ export class ChatHistoryManager implements ChatHistoryControls {
       accountUnavailable: this.locked ? undefined : this.unavailable,
       status: this.status,
       error: this.status === "error" ? this.error : undefined,
-      deviceChatCount: this.locked
-        ? 0
-        : ChatHistoryStore.readLocal(this.storageKey).sessions.filter((s) => s.messages?.length).length,
+      deviceChatCount: this.locked || !own ? 0 : countLocal(own),
+      signedOutDeviceChatCount: this.locked || !signedOutHidden ? 0 : countLocal(this.storageKey),
       canDeleteAccountChats: !!this.adapter && typeof this.userId === "string",
       retentionMonths: this.adapter?.retentionMonths,
     };
@@ -357,7 +404,10 @@ export class ChatHistoryManager implements ChatHistoryControls {
     this.unavailable = unavailable;
     const prev = this.mode;
     const load = next === "account" && (prev !== "account" || first || userChanged || opts.reload || !this.sync);
-    if (next === prev && !load) {
+    // Device mode shows exactly one slot: this person's. A new person means a new slot.
+    const deviceKey = this.deviceKey();
+    const openDevice = next === "device" && (!this.store.persistsLocally || this.store.localKey !== deviceKey);
+    if (next === prev && !load && !openDevice) {
       this.emitState();
       return;
     }
@@ -376,8 +426,14 @@ export class ChatHistoryManager implements ChatHistoryControls {
       this.error = undefined;
     }
     if (next === "device") {
+      // Chats typed on this page before the first check finished are this person's.
+      const early =
+        first && prev === "device" && !this.store.persistsLocally
+          ? this.store.list(true).filter((s) => s.messages.length)
+          : [];
       this.mode = "device";
-      this.store.useLocalStorage();
+      this.store.useLocalStorage(deviceKey);
+      if (early.length) this.store.merge(early);
     } else if (next === "off") {
       // Keep the conversation on screen for this page; nothing is written anywhere.
       const carry = !userChanged && prev !== "off" ? this.store.getActive() : null;
@@ -439,15 +495,51 @@ export class ChatHistoryManager implements ChatHistoryControls {
     return id ? String(id) : null;
   }
 
-  private async moveNow(): Promise<{ moved: number; failed: number }> {
-    if (this.mode !== "account" || !this.sync) return { moved: 0, failed: 0 };
-    const local = ChatHistoryStore.readLocal(this.storageKey).sessions.filter((s) => s.messages?.length);
-    if (!local.length) return { moved: 0, failed: 0 };
-    const saved = new Set(await this.sync.saveChats(local));
-    this.store.merge(local.filter((s) => saved.has(s.id)));
-    // Moved, not copied: the browser copy goes only once the account has it.
-    ChatHistoryStore.removeLocal([...saved], this.storageKey);
-    return { moved: saved.size, failed: local.length - saved.size };
+  /**
+   * Where this person's own device chats are: their slot when the adapter names them, the
+   * signed-out slot while nobody is signed in (or there is no adapter). null when the widget
+   * can't tell whose chats are whose: not checked yet, or an adapter without `currentUserId`.
+   */
+  private ownDeviceKey(): string | null {
+    if (!this.adapter || this.userId === null) return this.storageKey;
+    if (!this.userId) return null;
+    return deviceStorageKey(this.storageKey, this.userId);
+  }
+
+  /** The slot device mode shows. Without a named user there is only the signed-out slot. */
+  private deviceKey(): string {
+    return this.ownDeviceKey() ?? this.storageKey;
+  }
+
+  private async moveNow(from: DeviceChatSource = "mine"): Promise<{ moved: number; failed: number }> {
+    const none = { moved: 0, failed: 0 };
+    const own = this.ownDeviceKey();
+    // "mine" is only ever the user's own slot; the signed-out slot only when it isn't theirs.
+    const source = from === "mine" ? own : own === this.storageKey ? null : this.storageKey;
+    if (!source) return none;
+    const local = ChatHistoryStore.readLocal(source).sessions.filter((s) => s.messages?.length);
+    if (!local.length) return none;
+
+    if (this.mode === "account" && this.sync) {
+      // A move is activity. Keeping the old updatedAt would let the account's retention
+      // delete a chat right after the user was told it was moved (and its device copy went).
+      const now = new Date().toISOString();
+      const moving = local.map((s) => ({ ...s, updatedAt: now }));
+      const saved = new Set(await this.sync.saveChats(moving));
+      this.store.merge(moving.filter((s) => saved.has(s.id)));
+      // Moved, not copied: the browser copy goes only once the account has it.
+      ChatHistoryStore.removeLocal([...saved], source);
+      return { moved: saved.size, failed: local.length - saved.size };
+    }
+    if (this.mode === "device" && from === "signed-out" && own && this.store.localKey === own) {
+      this.store.merge(local);
+      // Only what the user's own slot now really holds leaves the signed-out slot.
+      const kept = new Set(ChatHistoryStore.readLocal(own).sessions.map((s) => s.id));
+      const moved = local.filter((s) => kept.has(s.id)).map((s) => s.id);
+      ChatHistoryStore.removeLocal(moved, source);
+      return { moved: moved.length, failed: local.length - moved.length };
+    }
+    return none;
   }
 
   private rememberLastUser(userId: string | null) {

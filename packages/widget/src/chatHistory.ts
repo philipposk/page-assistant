@@ -129,14 +129,23 @@ export class ChatHistoryStore {
     return this.persistLocal;
   }
 
+  /** The localStorage key this store reads and writes while it persists. */
+  get localKey(): string {
+    return this.storageKey;
+  }
+
   /** Be told about every change that another copy would need to mirror. */
   onChange(listener: (change: ChatStoreChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  /** Switch to localStorage and show what it holds. */
-  useLocalStorage() {
+  /**
+   * Switch to localStorage and show what it holds. `storageKey` moves the store to another
+   * key (another person's slot); nothing is written to the key it leaves.
+   */
+  useLocalStorage(storageKey?: string) {
+    if (storageKey) this.storageKey = storageKey;
     this.persistLocal = true;
     this.data = ChatHistoryStore.readLocal(this.storageKey);
     this.commit({ kind: "replace" });

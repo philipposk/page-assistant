@@ -142,6 +142,22 @@ PageAssistant.refreshChatHistory();
 Users switch between account, device and off in the Data tab, and can delete one chat or all
 of them. For sensitive data, keep `chatHistoryMode: "device"` and let users opt in to account.
 
+**Shared computers.** Implement `currentUserId()` whenever two people might use one browser.
+With it, each signed-in user's device chats are kept under their own key
+(`${storageKey}:user:${id}`) and chats made while signed out under the plain `storageKey`
+(where earlier versions kept everything). The widget shows only the current person's slot —
+after sign-out, sign-in or a change of user — and "Move my chats to my account" moves only
+the user's own. Signed-out chats are offered separately, as "chats made while signed out on
+this device", and move only if the user picks that. Without `currentUserId` the widget can't
+tell people apart: all device chats share the one signed-out slot and are never offered to
+anyone as theirs. This keeps people apart in the widget; it is not encryption — anyone with
+the browser profile can read localStorage. On a shared machine, `"off"` or `"account"` is
+the safe choice for sensitive data.
+
+**Moving and retention.** Moving device chats into the account counts as activity: each moved
+chat is saved with `updatedAt` = now (`createdAt` keeps its real age), so a chat older than
+the retention window is not deleted straight after the move.
+
 **Settings page embed** (optional):
 
 ```typescript
@@ -204,7 +220,8 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
 - [ ] Parity list: every action a user can take in your UI maps to a capability, or is
       noted as browser-only (downloads, payments, OAuth)
 - [ ] Account chat history (if used): migration applied, RLS on, retention sweep scheduled,
-      adapter built on the user-session client, `refreshChatHistory()` called on sign-in/out
+      adapter built on the user-session client with `currentUserId()`,
+      `refreshChatHistory()` called on sign-in/out
 - [ ] Your internal names (databases, services, old product names) added to `scrub`:
       `[...DEFAULT_SCRUB_RULES, ["InternalDB", "our records"]]`. Credentials, connection
       strings and environment variable names are scrubbed by default

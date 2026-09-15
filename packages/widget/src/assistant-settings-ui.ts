@@ -26,7 +26,7 @@ import {
   type VoiceCapabilities,
 } from "./settings.js";
 import type { ChatHistoryStore } from "./chatHistory.js";
-import type { ChatHistoryControls, ChatHistoryMode } from "./chatHistoryMode.js";
+import type { ChatHistoryControls, ChatHistoryMode, ChatHistoryState, DeviceChatSource } from "./chatHistoryMode.js";
 import { DEFAULT_STRINGS, fmt, resolveStrings, type WidgetStrings } from "./strings.js";
 import { fetchModelCatalog, type ModelCatalog } from "./models.js";
 
@@ -349,6 +349,41 @@ interface HistoryTabContext {
   run: (fn: () => Promise<string | undefined>) => Promise<void>;
 }
 
+export interface HistoryMoveOffer {
+  from: DeviceChatSource;
+  text: string;
+  button: string;
+  /** Flash line after a full move; `{count}` is how many moved. */
+  done: string;
+}
+
+/**
+ * The "move chats" offers the Data tab shows. The user's own device chats are offered as
+ * theirs; chats made while signed out are offered only with wording that says so.
+ */
+export function historyMoveOffers(st: ChatHistoryState, s: WidgetStrings = DEFAULT_STRINGS): HistoryMoveOffer[] {
+  if (st.locked) return [];
+  const offers: HistoryMoveOffer[] = [];
+  if (st.mode === "account" && st.deviceChatCount > 0) {
+    offers.push({
+      from: "mine",
+      text: fmt(s.historyMoveOffer, { count: String(st.deviceChatCount) }),
+      button: s.historyMoveButton,
+      done: s.historyMoveDone,
+    });
+  }
+  if ((st.mode === "account" || st.mode === "device") && st.signedOutDeviceChatCount > 0) {
+    const toAccount = st.mode === "account";
+    offers.push({
+      from: "signed-out",
+      text: fmt(s.historyMoveSignedOutOffer, { count: String(st.signedOutDeviceChatCount) }),
+      button: toAccount ? s.historyMoveButton : s.historyMoveSignedOutToDeviceButton,
+      done: toAccount ? s.historyMoveDone : s.historyMoveSignedOutToDeviceDone,
+    });
+  }
+  return offers;
+}
+
 function renderHistory(root: HTMLElement, h: ChatHistoryControls, s: WidgetStrings, ctx: HistoryTabContext) {
   const st = h.getState();
   if (st.locked) return;
@@ -411,14 +446,14 @@ function renderHistory(root: HTMLElement, h: ChatHistoryControls, s: WidgetStrin
     section.appendChild(p);
   }
 
-  if (st.mode === "account" && st.deviceChatCount > 0) {
-    const p = el("p", "hint", fmt(s.historyMoveOffer, { count: String(st.deviceChatCount) }));
-    const move = el("button", "btn btn-ghost btn-inline", s.historyMoveButton) as HTMLButtonElement;
+  for (const offer of historyMoveOffers(st, s)) {
+    const p = el("p", "hint", offer.text);
+    const move = el("button", "btn btn-ghost btn-inline", offer.button) as HTMLButtonElement;
     move.disabled = ctx.busy;
     move.onclick = () =>
       void ctx.run(async () => {
-        const r = await h.moveDeviceChats();
-        return r.failed ? s.historyMoveFailed : fmt(s.historyMoveDone, { count: String(r.moved) });
+        const r = await h.moveDeviceChats({ from: offer.from });
+        return r.failed ? s.historyMoveFailed : fmt(offer.done, { count: String(r.moved) });
       });
     p.append(" ", move);
     section.appendChild(p);

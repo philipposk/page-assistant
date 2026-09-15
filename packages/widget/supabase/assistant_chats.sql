@@ -39,7 +39,9 @@ create index if not exists assistant_chats_user_app_updated_idx
 create index if not exists assistant_chats_updated_idx
   on public.assistant_chats (updated_at);
 
--- The client sends its own timestamps, so a chat moved from a device keeps its real age.
+-- The client sends its own timestamps: created_at keeps a moved chat's real age, and
+-- updated_at is its last activity. The widget counts a move from the device as activity, so
+-- the sweep never deletes a chat right after the user was told it was moved.
 -- It may never send one in the future: that would dodge the retention rule.
 create or replace function public.assistant_chats_clamp_times()
 returns trigger

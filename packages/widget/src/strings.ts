@@ -165,12 +165,21 @@ export interface WidgetStrings {
   historyAccountSignedOut: string;
   /** Native confirm() when switching to account with chats on this device. `{count}` chats. */
   historyMovePrompt: string;
-  /** `{count}` chats still only in this browser, while in account mode. */
+  /** `{count}` of the signed-in user's own chats still only in this browser, while in account mode. */
   historyMoveOffer: string;
   historyMoveButton: string;
   /** `{count}` chats moved. */
   historyMoveDone: string;
   historyMoveFailed: string;
+  /**
+   * `{count}` chats made in this browser while nobody was signed in, offered to a signed-in
+   * user. Must say plainly that they may not be this user's.
+   */
+  historyMoveSignedOutOffer: string;
+  /** Device mode: take the signed-out chats into the user's own chats on this device. */
+  historyMoveSignedOutToDeviceButton: string;
+  /** `{count}` signed-out chats added to the user's own device chats. */
+  historyMoveSignedOutToDeviceDone: string;
   historyAccountKept: string;
   historyDeleteAll: string;
   historyDeleteAllConfirm: string;
@@ -318,11 +327,15 @@ export const DEFAULT_STRINGS: WidgetStrings = {
   historyAccountNoAdapter: "Saving to your account isn't available here.",
   historyAccountSignedOut: "Sign in to save chats to your account.",
   historyMovePrompt:
-    "Chats saved on this device: {count}. Move them to your account too?\n\nOK moves them. Cancel leaves them on this device only.",
-  historyMoveOffer: "Chats saved only on this device: {count}.",
+    "Your chats saved on this device: {count}. Move them to your account too?\n\nOK moves them. Cancel leaves them on this device only.",
+  historyMoveOffer: "Your chats saved only on this device: {count}.",
   historyMoveButton: "Move them to my account",
   historyMoveDone: "Moved to your account: {count}.",
   historyMoveFailed: "Some chats couldn't be moved and are still on this device.",
+  historyMoveSignedOutOffer:
+    "Chats made while signed out on this device: {count}. Anyone using this browser could have made them, so move them only if they're yours.",
+  historyMoveSignedOutToDeviceButton: "Add them to my chats",
+  historyMoveSignedOutToDeviceDone: "Added to your chats: {count}.",
   historyAccountKept: "Chats already saved to your account stay there until you delete them.",
   historyDeleteAll: "Delete all my chats",
   historyDeleteAllConfirm: "Delete all your chats on this device? This can't be undone.",

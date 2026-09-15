@@ -243,8 +243,12 @@ PageAssistant.refreshChatHistory();
   sent is dropped rather than saved as whoever signs in next.
 - **The user's choice is remembered in this browser, per signed-in user**, so a second
   person signing in on a shared browser gets your default, not the first person's choice.
-- **Switching to account offers to move this device's chats** into the account; a moved chat
-  is removed from the browser only once the account has it. **Leaving account deletes
+- **Device chats are kept per person** when the adapter's `currentUserId()` names the user:
+  each person sees only their own, and chats made while signed out are offered to a
+  signed-in user only as exactly that. See [INTEGRATION.md](./INTEGRATION.md).
+- **Switching to account offers to move the user's own device chats** into the account; a
+  moved chat is removed from the browser only once the account has it, and the move counts
+  as activity for retention. **Leaving account deletes
   nothing** — the panel notes the chats are still saved and offers "Delete all my chats",
   which empties this browser and, when someone is signed in, the account.
 - Empty chats are never saved, and writes are batched a moment after each change. A list

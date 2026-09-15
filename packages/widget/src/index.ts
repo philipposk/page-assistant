@@ -198,9 +198,11 @@ export {
   resolveChatHistoryMode,
   getStoredChatHistoryMode,
   setStoredChatHistoryMode,
+  deviceStorageKey,
   CHAT_HISTORY_MODES,
   CHAT_HISTORY_MODE_STORAGE_KEY,
   type ChatHistoryMode,
+  type DeviceChatSource,
   type ChatHistoryState,
   type ChatHistoryControls,
   type AccountUnavailableReason,
@@ -249,7 +251,9 @@ export {
   mountAssistantSettingsPanel,
   openAssistantSettingsModal,
   closeAssistantSettingsModal,
+  historyMoveOffers,
   type AssistantSettingsUIOptions,
+  type HistoryMoveOffer,
 } from "./assistant-settings-ui.js";
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
@@ -295,7 +299,8 @@ class PageAssistantController {
     this.ttsEnabled = cfg.autoSpeak ?? (useStored ? stored.autoSpeak : false);
 
     // Owns the store and where it keeps chats. Device mode (the default) is decided here,
-    // synchronously, exactly as before; account mode loads in start() below.
+    // synchronously, exactly as before — unless the adapter names users, in which case the
+    // user's own device chats, like account chats, load in start() below.
     this.historyMgr = new ChatHistoryManager({
       storageKey: cfg.chatHistoryStorageKey,
       defaultMode: cfg.chatHistoryMode,

@@ -35,8 +35,9 @@ export interface ChatHistoryAdapter {
   /**
    * The signed-in user's id, or null/undefined when nobody is signed in. While nobody is,
    * the widget falls back to its signed-out mode and says why in settings. Also keys the
-   * user's saved choice of mode, so two people sharing a browser don't share it.
-   * Leave it out if the adapter only exists while someone is signed in.
+   * user's saved choice of mode and their "device" chats, so two people sharing a browser
+   * share neither. Without it the widget can't tell people apart: every device chat sits in
+   * one signed-out slot and is never offered to anyone as their own.
    */
   currentUserId?(): string | null | undefined | Promise<string | null | undefined>;
   /** Every saved chat, newest first. Rows may leave out `messages`. */

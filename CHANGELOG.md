@@ -62,9 +62,22 @@ Lessons from running a page assistant in production, generalised. No version bum
   `deleteAll`, and optionally `currentUserId`, `saveMany`, `retentionMonths`. The widget never
   talks to a database. Without an adapter, or with nobody signed in, account falls back and
   settings says why.
-- **Moving and leaving.** Switching to account offers to move this browser's chats (removed
-  locally only once saved). Leaving account deletes nothing; "Delete all my chats" empties
-  the browser and, when someone is signed in, the account.
+- **Moving and leaving.** Switching to account offers to move the user's own device chats
+  (removed locally only once saved). Leaving account deletes nothing; "Delete all my chats"
+  empties the user's device chats and, when someone is signed in, the account.
+- **Device chats are kept per person.** When the adapter's `currentUserId()` names the user,
+  their device chats live under `${storageKey}:user:${id}`; the plain `storageKey` is the
+  signed-out slot. Each person sees only their own slot — after a sign-out, a sign-in or a
+  change of user, and not even briefly on page load (with such an adapter, device chats load
+  once the sign-in check finishes). "Move my chats" moves only the user's own. Signed-out
+  chats are offered separately, worded as "made while signed out on this device", and move
+  only on that explicit choice (into the account, or into the user's own device chats).
+  `moveDeviceChats({ from: "signed-out" })`, `ChatHistoryState.signedOutDeviceChatCount`,
+  `deviceStorageKey()` and `historyMoveOffers()` expose this; three new strings.
+- **Moving counts as activity.** A moved chat is saved with `updatedAt` set to the moment of
+  the move (`createdAt` keeps its real age), so account retention runs from the move. Before,
+  a chat older than the retention window was hidden and pruned right after the user was told
+  it was moved, and its device copy was already gone.
 - **Safe by construction:** empty chats are never saved; a chat listed without messages is
   fetched before it is saved, so a rename cannot blank it; writes waiting when the user
   signs out or changes are dropped, never sent as the next person.
@@ -86,6 +99,10 @@ Lessons from running a page assistant in production, generalised. No version bum
   storage key. The Data tab now shows the history choice, and its hint default changed to
   "Export your chats to a file, or import a backup." (the old one claimed data never left
   the browser, which account mode makes untrue). A translated `settingsDataHint` is kept.
+- Chats saved by earlier versions stay under the plain `storageKey`, now the signed-out slot.
+  Without an adapter, or with one that has no `currentUserId`, nothing moves. With one that
+  names users, a signed-in user no longer sees those chats as theirs; settings offers to add
+  them, worded as signed-out chats.
 
 ## 0.5.1 — The rest of the translation, a themed panel, and an honest model picker
 
