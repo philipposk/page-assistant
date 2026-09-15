@@ -73,6 +73,45 @@ Rules:
 - Schemas are checked at registration: one `type` per field (optional fields already accept `null`), unique names, every `required` key declared in `properties`. A bad schema throws `CapabilitySchemaError` at `init`, instead of failing every chat turn
 - Built-in blind-mode `open_page_link` already requires confirm; prefer explicit capabilities for integrated apps
 
+### Links in replies
+
+A reply can contain markdown links, `[label](href)`, and the widget shows them as real links.
+Return them from `render()` so each result opens its own page, and the "and N more" opens
+your own results page:
+
+```typescript
+import { capability, markdownLink } from "@page-assistant/widget";
+// Script-tag bundle: PageAssistantBundle.markdownLink
+
+capability({
+  name: "find_places",
+  description: "Find places by category.",
+  parameters: { type: "object", properties: { cat: { type: "string" } }, required: ["cat"] },
+  verbatim: true,
+  run: async ({ cat }) => api.places({ cat }),
+  render: (r, { cat }) => {
+    const shown = r.items.slice(0, 5).map((p) => markdownLink(p.name, `/places/${p.slug}`));
+    const more = r.total - shown.length;
+    return `Try ${shown.join(", ")}` +
+      (more > 0 ? ` ${markdownLink(`…and ${more} more`, `/places?cat=${encodeURIComponent(cat)}`)}` : "") + ".";
+  },
+});
+// → Try [Aphrodite Garden](/places/aphrodite-garden), [Yamas Tavern](/places/yamas-tavern) [...and 68 more](/places?cat=food).
+```
+
+- **Only same-origin paths become links**: the href starts with exactly one `/`. `//host`,
+  `javascript:`, `data:`, relative paths and other sites show as the label only. To allow
+  absolute links to another site, list its origin: `linkOrigins: ["https://maps.example.com"]`.
+- **Use `markdownLink(label, href)`** rather than a template string: it escapes brackets and
+  parentheses, so a name like `Taverna [Old] Port` or a path with `(` cannot break the link.
+  By hand: `\[` `\]` in a label, `\(` `\)` in an href, no spaces in an href.
+- The model keeps links it got from your capabilities and may write its own; either way the
+  same rule applies. Numbers in a label are checked like any text; digits in an href are not.
+- Scrubbing never rewrites an href. If a scrub rule matches inside one (a token, an internal
+  name), that link is shown as its label only.
+- Chat history stores the raw text, so links come back when a chat is reopened. Read-aloud
+  speaks the labels, never the URLs.
+
 ## 4. Embed the widget
 
 ```typescript
@@ -88,8 +127,18 @@ PageAssistant.init({
   capabilities: caps,
   getPageState: () => ({ view: currentView, selection: selectedId }),
   suggestions: ["Search my recent orders", "What can you do?"],
+  onNavigate: (href) => router.push(href), // optional: SPA navigation for links in replies
+  linkOrigins: [],                          // optional: other origins links may point at
 });
 ```
+
+**Links in replies: navigation.** Clicking a link calls `onNavigate(href)` when given, so an
+SPA changes page without a reload and the conversation stays on screen (Next.js:
+`router.push`). Without it the widget calls `window.location.assign(href)` — and it does so
+too if `onNavigate` throws or its promise rejects. On a wide screen the panel reopens on the
+new page after a full load; on a phone (≤520px) it closes so the page is visible, and
+reopening shows the same conversation. Cmd/Ctrl/middle-click open a new tab as usual. With
+`chatHistoryMode: "off"` a full page load starts a new conversation — pass `onNavigate`.
 
 **Workspace vocabulary** (recommended when users create their own tags, folders,
 statuses or projects): give the model the real values, so "the Q3 shortlist" maps onto a

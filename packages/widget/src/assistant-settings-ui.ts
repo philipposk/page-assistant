@@ -59,12 +59,14 @@ export interface AssistantSettingsUIOptions {
    * fixed server-side and which models it can actually serve.
    */
   modelPicker?: boolean | "auto";
+  /** `false` when the host turned voice off (`voice: false`): the Voice tab is not shown. */
+  voice?: boolean;
   /** Chrome strings; anything omitted keeps its English default. */
   strings?: Partial<WidgetStrings>;
 }
 
 type TabId = "General" | "Voice" | "Data";
-const TABS: TabId[] = ["General", "Voice", "Data"];
+const ALL_TABS: TabId[] = ["General", "Voice", "Data"];
 
 export function mountAssistantSettingsPanel(
   container: HTMLElement,
@@ -87,6 +89,8 @@ export function mountAssistantSettingsPanel(
   const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : undefined;
   media?.addEventListener?.("change", applyTheme);
 
+  // With voice off, every control on the Voice tab would change nothing.
+  const TABS = ALL_TABS.filter((t) => t !== "Voice" || opts.voice !== false);
   let activeTab: TabId = "General";
   const root = el("div", "wrap");
   shadow.appendChild(root);

@@ -12,6 +12,8 @@ export const THEME_VARS: Record<Exclude<ThemeMode, "system">, Record<string, str
     "--pa-text-muted": "#9ab4a6",
     "--pa-border": "#1f3a2c",
     "--pa-accent": "#16a34a",
+    // Links in replies: the accent, lifted to read on the dark reply bubble (~8:1).
+    "--pa-link": "#4ade80",
     // Hover/active shade of the accent, and a raised surface (active settings tab).
     "--pa-accent-hover": "#15803d",
     "--pa-bg-elevated": "#1d3328",
@@ -32,6 +34,8 @@ export const THEME_VARS: Record<Exclude<ThemeMode, "system">, Record<string, str
     // Darkened from #059669 (~3.75:1 white text) to hit WCAG AA (~4.5:1) on accent buttons
     // (send / Confirm / Retry / "+ New chat").
     "--pa-accent": "#047857",
+    // Links in replies (~5.5:1 on the light reply bubble).
+    "--pa-link": "#047857",
     "--pa-accent-hover": "#065f46",
     "--pa-bg-elevated": "#e2e8f0",
     // Darker red for the "Delete" menu item — #f87171 was ~2.2:1 on white (fails AA).
