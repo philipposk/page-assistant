@@ -32,6 +32,8 @@ export interface SupabaseChatHistoryOptions {
 }
 
 const LIST_COLUMNS = "id,title,pinned,archived,group_id,model,created_at,updated_at";
+/** The table's primary key. A chat id is only unique within one user's chats in one app. */
+const CONFLICT_KEY = "user_id,app,id";
 
 interface Row {
   id: string;
@@ -145,13 +147,13 @@ export function supabaseChatHistoryAdapter(
 
     async save(chat) {
       const uid = await requireUser();
-      await run(client.from(table).upsert(toRow(chat, uid), { onConflict: "user_id,id" }));
+      await run(client.from(table).upsert(toRow(chat, uid), { onConflict: CONFLICT_KEY }));
     },
 
     async saveMany(chats) {
       if (!chats.length) return;
       const uid = await requireUser();
-      await run(client.from(table).upsert(chats.map((c) => toRow(c, uid)), { onConflict: "user_id,id" }));
+      await run(client.from(table).upsert(chats.map((c) => toRow(c, uid)), { onConflict: CONFLICT_KEY }));
     },
 
     async delete(id) {

@@ -147,7 +147,8 @@ export interface ChatHistoryState {
   deviceChatCount: number;
   /**
    * Chats made in this browser while signed out, when the current view doesn't show them:
-   * a signed-in user may choose to move them, told plainly whose they may be.
+   * a signed-in user may choose to move them, told plainly whose they may be. Always 0 when
+   * the host set `offerSignedOutChats: false`.
    */
   signedOutDeviceChatCount: number;
   /** An adapter exists and someone is signed in, so their saved chats can be deleted. */
@@ -187,6 +188,12 @@ export interface ChatHistoryManagerOptions {
   /** `disableChatHistory`: always "off", nothing to choose. */
   disabled?: boolean;
   adapter?: ChatHistoryAdapter;
+  /**
+   * Offer a signed-in user the chats made in this browser while nobody was signed in.
+   * Default true. `false`: they are never offered, counted or moved (into the account or into
+   * the user's own device chats) — for apps used on shared computers.
+   */
+  offerSignedOutChats?: boolean;
   debounceMs?: number;
   retryDelaysMs?: number[];
   onError?: (error: unknown) => void;
@@ -204,11 +211,13 @@ export class ChatHistoryManager implements ChatHistoryControls {
   private fallback: "device" | "off";
   private locked: boolean;
   private adapter?: ChatHistoryAdapter;
+  private offerSignedOut: boolean;
   private mode: ChatHistoryMode;
   private unavailable?: AccountUnavailableReason;
   /** `undefined` until checked; `null` = nobody signed in (or no adapter). */
   private userId: string | null | undefined;
   private hintUserId: string | null | undefined;
+  private userGen = 0;
   private sync?: AccountHistorySync;
   private status: ChatHistoryState["status"] = "idle";
   private error?: ChatHistoryState["error"];
@@ -224,6 +233,7 @@ export class ChatHistoryManager implements ChatHistoryControls {
     this.fallback = opts.fallbackMode === "off" ? "off" : "device";
     this.locked = !!opts.disabled;
     this.adapter = opts.adapter;
+    this.offerSignedOut = opts.offerSignedOutChats !== false;
 
     // First guess, so the first render is usually already right: whoever was signed in
     // last time is usually who is here now. `start()` checks.
@@ -317,6 +327,15 @@ export class ChatHistoryManager implements ChatHistoryControls {
     return (await this.sync.load(id)) === "loaded";
   }
 
+  /**
+   * Goes up each time the signed-in user changes (sign-out, sign-in, another account), as soon
+   * as the change is noticed and before the store is swapped. Anything started for the
+   * previous person — a reply still loading — compares it to know it must not be saved.
+   */
+  get userGeneration(): number {
+    return this.userGen;
+  }
+
   /** Send any waiting account writes now. */
   flush(): Promise<void> {
     return this.sync?.flush() ?? Promise.resolve();
@@ -325,7 +344,8 @@ export class ChatHistoryManager implements ChatHistoryControls {
   getState(): ChatHistoryState {
     const own = this.ownDeviceKey();
     const shown = this.store.persistsLocally ? this.store.localKey : null;
-    const signedOutHidden = this.userId !== undefined && own !== this.storageKey && shown !== this.storageKey;
+    const signedOutHidden =
+      this.offerSignedOut && this.userId !== undefined && own !== this.storageKey && shown !== this.storageKey;
     return {
       mode: this.mode,
       chosen: this.chosen(),
@@ -392,6 +412,7 @@ export class ChatHistoryManager implements ChatHistoryControls {
     const first = this.userId === undefined;
     const userChanged = !first && userId !== this.userId;
     this.userId = userId;
+    if (userChanged) this.userGen++;
     if (this.adapter) this.rememberLastUser(userId);
     if (opts.choose) setStoredChatHistoryMode(opts.choose, this.adapter ? userId : null, this.modeKey);
 
@@ -514,8 +535,10 @@ export class ChatHistoryManager implements ChatHistoryControls {
   private async moveNow(from: DeviceChatSource = "mine"): Promise<{ moved: number; failed: number }> {
     const none = { moved: 0, failed: 0 };
     const own = this.ownDeviceKey();
-    // "mine" is only ever the user's own slot; the signed-out slot only when it isn't theirs.
-    const source = from === "mine" ? own : own === this.storageKey ? null : this.storageKey;
+    // "mine" is only ever the user's own slot; the signed-out slot only when it isn't theirs
+    // and the host allows offering it at all.
+    const source =
+      from === "mine" ? own : own === this.storageKey || !this.offerSignedOut ? null : this.storageKey;
     if (!source) return none;
     const local = ChatHistoryStore.readLocal(source).sessions.filter((s) => s.messages?.length);
     if (!local.length) return none;

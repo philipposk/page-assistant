@@ -29,8 +29,26 @@ create table if not exists public.assistant_chats (
   model       text,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
-  primary key (user_id, id)
+  -- A chat id is unique only within one user's chats in one app: apps sharing this table
+  -- must never overwrite each other's chat that happens to have the same id.
+  primary key (user_id, app, id)
 );
+
+-- Earlier versions of this file keyed rows on (user_id, id), so an upsert from one app could
+-- overwrite another app's chat with the same id. Re-key such a table; does nothing otherwise.
+do $$
+begin
+  if exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.assistant_chats'::regclass
+      and conname = 'assistant_chats_pkey'
+      and pg_get_constraintdef(oid) = 'PRIMARY KEY (user_id, id)'
+  ) then
+    alter table public.assistant_chats drop constraint assistant_chats_pkey;
+    alter table public.assistant_chats add constraint assistant_chats_pkey primary key (user_id, app, id);
+  end if;
+end;
+$$;
 
 -- The list: one user's chats in one app, newest first.
 create index if not exists assistant_chats_user_app_updated_idx

@@ -456,6 +456,39 @@ test("in device mode a signed-in user can take the signed-out chats as their own
   m.dispose();
 });
 
+test("offerSignedOutChats: true (the default) offers the signed-out chats; false never does", async () => {
+  const seedSignedOut = () =>
+    storage.set(KEY, JSON.stringify({ version: 1, activeId: null, sessions: [chat("visitor")], groups: [] }));
+
+  // true: offered, and moved on the explicit choice.
+  seedSignedOut();
+  const yes = fakeAdapter({ user: "alice" });
+  const on = manager({ adapter: yes.adapter, offerSignedOutChats: true });
+  await on.start();
+  assert.equal(on.getState().signedOutDeviceChatCount, 1);
+  assert.deepEqual(settingsUi.historyMoveOffers(on.getState()).map((o) => o.from), ["signed-out"]);
+  assert.deepEqual(await on.moveDeviceChats({ from: "signed-out" }), { moved: 1, failed: 0 });
+  on.dispose();
+
+  // false: never counted, offered or moved — in device mode or in account mode.
+  storage.clear();
+  seedSignedOut();
+  const no = fakeAdapter({ user: "alice" });
+  const off = manager({ adapter: no.adapter, offerSignedOutChats: false });
+  await off.start();
+  assert.equal(off.getState().signedOutDeviceChatCount, 0);
+  assert.deepEqual(settingsUi.historyMoveOffers(off.getState()), []);
+  assert.deepEqual(await off.moveDeviceChats({ from: "signed-out" }), { moved: 0, failed: 0 });
+  await off.setMode("account", { moveDeviceChats: true });
+  assert.equal(off.getState().signedOutDeviceChatCount, 0);
+  assert.deepEqual(settingsUi.historyMoveOffers(off.getState()), []);
+  assert.deepEqual(await off.moveDeviceChats({ from: "signed-out" }), { moved: 0, failed: 0 });
+  assert.equal(no.calls.save.length, 0, "nothing of the signed-out slot reaches the account");
+  assert.deepEqual(deviceChats().map((s) => s.id), ["visitor"], "left where it was");
+  assert.equal(deviceChats(userSlot("alice")).length, 0);
+  off.dispose();
+});
+
 test("chats saved by earlier versions stay where they were: the signed-out slot", async () => {
   storage.set(KEY, JSON.stringify({ version: 1, activeId: "old", sessions: [chat("old")], groups: [] }));
   const plain = manager(); // no adapter: read synchronously, exactly as before
@@ -634,12 +667,25 @@ test("supabase adapter: save upserts as the signed-in user", async () => {
   const adapter = supabaseChatHistoryAdapter(client);
   await adapter.save(chat("c1"));
   const [upsert] = op(queries[0], "upsert");
-  assert.deepEqual(upsert[2], { onConflict: "user_id,id" });
   assert.equal(upsert[1].user_id, "u1");
   assert.equal(upsert[1].app, "");
   assert.equal(upsert[1].group_id, null);
   assert.equal(upsert[1].updated_at, "2026-09-01T10:00:00.000Z");
   assert.equal(upsert[1].messages.length, 2);
+});
+
+test("supabase adapter: upserts conflict on (user_id, app, id), so apps sharing a table stay apart", async () => {
+  // On (user_id, id), saving chat "c1" in one app would overwrite the same user's "c1" in another.
+  const { client, queries } = fakeSupabase({ respond: () => ({ data: null, error: null }) });
+  const adapter = supabaseChatHistoryAdapter(client, { app: "notes" });
+  await adapter.save(chat("c1"));
+  await adapter.saveMany([chat("c2"), chat("c3")]);
+  const [one] = op(queries[0], "upsert");
+  const [many] = op(queries[1], "upsert");
+  assert.deepEqual(one[2], { onConflict: "user_id,app,id" });
+  assert.deepEqual(many[2], { onConflict: "user_id,app,id" });
+  assert.equal(one[1].app, "notes");
+  assert.deepEqual(many[1].map((r) => [r.app, r.id]), [["notes", "c2"], ["notes", "c3"]]);
 });
 
 test("supabase adapter: delete all is scoped to this user and app", async () => {
@@ -678,6 +724,15 @@ test("the migration locks every row to its owner and sweeps inactive chats", asy
   assert.match(sql, /updated_at < now\(\) - interval '12 months'/);
   assert.match(sql, /revoke execute on function public\.assistant_chats_delete_inactive\(\) from public, anon, authenticated/);
   assert.match(sql, /cron\.schedule/);
+});
+
+test("the migration keys chats on (user_id, app, id) and re-keys a table made by the old file", async () => {
+  const sql = await readFile(new URL("../supabase/assistant_chats.sql", import.meta.url), "utf8");
+  const create = sql.slice(sql.indexOf("create table"), sql.indexOf(");", sql.indexOf("create table")));
+  assert.match(create, /primary key \(user_id, app, id\)/, "the adapter upserts on exactly this key");
+  assert.doesNotMatch(create, /primary key \(user_id, id\)/);
+  assert.match(sql, /pg_get_constraintdef\(oid\) = 'PRIMARY KEY \(user_id, id\)'/);
+  assert.match(sql, /add constraint assistant_chats_pkey primary key \(user_id, app, id\)/);
 });
 
 test("every history string has an English default", () => {
