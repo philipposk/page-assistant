@@ -2,6 +2,23 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.6.2 — Importing the widget works in Next.js again
+
+Found in transcriber.6x7.gr, which imports `@page-assistant/widget` in a Next.js 16 app. All
+packages bumped `0.6.1 → 0.6.2` together.
+
+- **`import("@page-assistant/widget")` no longer throws under Turbopack.** 0.6.1 built the
+  full `window.PageAssistant` at the end of `index.ts` by importing the module into itself and
+  spreading its exports. Turbopack splits a module's code from its re-exports and ran the spread
+  first, so the import failed with "Cannot read properties of undefined (reading
+  'ASSISTANT_SETTINGS_STORAGE_KEY')" and the widget never mounted.
+- **The script-tag bundle now starts at `src/global.ts`**, which imports the module and puts
+  every export on `window.PageAssistant`, controller methods winning on a clash, as in 0.6.1.
+  `PageAssistantBundle` still holds every module export. Imported as a module, the widget sets
+  `window.PageAssistant` to the controller only, as it did before 0.6.1.
+- **A test fails if any module but `src/global.ts` imports the package index**, or if the built
+  `dist/index.js` imports itself.
+
 ## 0.6.1 — The script-tag global carries everything
 
 Found in samos.6x7.gr, which vendors `page-assistant.global.js`. All packages bumped
