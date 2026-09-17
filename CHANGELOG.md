@@ -2,6 +2,23 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.7.3 — A dropped link is put back
+
+A capability without `verbatim: true` renders links the model is free to paraphrase around —
+the point of `verbatim` is exactly to turn that off. In practice the model sometimes keeps a
+place's or business's name but drops the markup that made it a link, so the reply still names
+the right thing but the visitor can no longer open it. Samos's guide hit this live: "Where do we
+eat in Pythagoreio" answered with the right tavernas by name, unlinked.
+
+- **`restoreDroppedLinks(text, invocations)`** runs in the grounding loop right after the
+  factual-number check, on every non-verbatim render(). For each link a trusted render offered,
+  if its destination is missing from the final reply but its label is still there as plain
+  text, the first such mention becomes the link again. It invents nothing: a name the model did
+  not keep, or wrote differently enough that a whole-word match fails, is left alone.
+- **`insertLinkForMention(text, label, href)`**, the piece that does the finding-and-linking,
+  case-insensitive and whole-word, and never inside a link, an image, or an image's alt text.
+  Both are new core exports.
+
 ## 0.7.2 — Importing the widget works in Next.js again
 
 Found in transcriber.6x7.gr, which imports `@page-assistant/widget` in a Next.js 16 app. All
