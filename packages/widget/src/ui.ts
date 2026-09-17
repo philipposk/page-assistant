@@ -688,6 +688,12 @@ export class WidgetUI {
       // Opening — from the launcher, the reply bubble, or code — is what "seeing" a reply
       // means: the badge and any bubble are for what hasn't been opened to yet.
       this.clearUnread();
+      // A reply that landed while the panel was closed could not scroll the hidden log (and a
+      // restored history starts at its oldest message), so opening always shows the latest turn.
+      const raf = globalThis.requestAnimationFrame ?? ((cb: FrameRequestCallback) => setTimeout(cb, 0));
+      raf(() => {
+        this.log.scrollTop = this.log.scrollHeight;
+      });
       this.lastFocused = (document.activeElement as HTMLElement) ?? undefined;
       this.input.focus();
     } else {

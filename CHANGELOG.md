@@ -2,6 +2,12 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.7.1 — Opening shows the latest reply
+
+- Opening the panel (from the launcher, the reply bubble or `ask({ open: true })`) now scrolls the
+  transcript to the latest message. A reply that arrived while the panel was closed could not
+  scroll the hidden log, so tapping the reply bubble opened the chat at its oldest message.
+
 ## 0.7.0 — Ask the assistant from code
 
 A host page can now put words in the visitor's mouth — a search with no results, an empty
