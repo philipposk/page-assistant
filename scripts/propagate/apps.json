@@ -1,27 +1,48 @@
 {
-  "$comment": "Apps that embed page-assistant and how each is moved to a new version. kind: bundle = the script-tag bundle copied into the app; dir = built packages copied into the app; submodule = git submodule + file: deps; pin = the app clones the SDK at install time at a commit pinned in a script. uses = the names the app's code calls, checked against each release. Left out on purpose: Translator and Greenpert (own copies of old versions; move them to a submodule first), AI OS and AI-OS (still on ~0.2; AI-OS's Python backend speaks the widget's LLM protocol, so a jump needs a person).",
+  "$comment": "Apps that embed page-assistant and how each is moved to a new version. kind: bundle = the script-tag bundle copied into the app; dir = built packages copied into the app; submodule = git submodule + file: deps; pin = the app clones the SDK at install time at a commit pinned in a script. uses = the names the app's code calls, checked against each release. Left out on purpose: Translator (own copy of an old version; move it to a submodule first), AI OS and AI-OS (still on ~0.2; AI-OS's Python backend speaks the widget's LLM protocol, so a jump needs a person).",
   "apps": [
     {
       "name": "samos-companion",
       "repo": "philipposk/samos-companion",
       "kind": "bundle",
-      "bundle": { "to": "public/vendor/page-assistant.global.js" },
-      "uses": { "globals": ["init", "destroy", "refreshChatHistory", "supabaseChatHistoryAdapter", "ask"] },
+      "bundle": {
+        "to": "public/vendor/page-assistant.global.js"
+      },
+      "uses": {
+        "globals": [
+          "init",
+          "destroy",
+          "refreshChatHistory",
+          "supabaseChatHistoryAdapter",
+          "ask"
+        ]
+      },
       "checkAfterDeploy": "open samos.6x7.gr, open the assistant and ask something; it answers with place links."
     },
     {
       "name": "topia",
       "repo": "philipposk/topia",
       "kind": "bundle",
-      "bundle": { "to": "public/vendor/page-assistant.js", "versionFile": "public/vendor/page-assistant.version" },
-      "uses": { "globals": ["PageAssistantBundle.PageAssistant", "PageAssistantBundle.capability"] },
+      "bundle": {
+        "to": "public/vendor/page-assistant.js",
+        "versionFile": "public/vendor/page-assistant.version"
+      },
+      "uses": {
+        "globals": [
+          "PageAssistantBundle.PageAssistant",
+          "PageAssistantBundle.capability"
+        ]
+      },
       "checkAfterDeploy": "sign in on topia.6x7.gr, open a destination and ask the assistant for places."
     },
     {
       "name": "nowish",
       "repo": "philipposk/nowish",
       "kind": "bundle",
-      "bundle": { "to": "public/vendor/page-assistant.js", "versionFile": "public/vendor/page-assistant.version" },
+      "bundle": {
+        "to": "public/vendor/page-assistant.js",
+        "versionFile": "public/vendor/page-assistant.version"
+      },
       "uses": {}
     },
     {
@@ -29,25 +50,82 @@
       "repo": "philipposk/riffscribe",
       "kind": "dir",
       "copy": [
-        { "from": "packages/core", "to": "vendor/page-assistant/core", "files": ["dist", "package.json", "LICENSE"] },
-        { "from": "packages/widget", "to": "vendor/page-assistant/widget", "files": ["dist", "package.json", "LICENSE"] }
+        {
+          "from": "packages/core",
+          "to": "vendor/page-assistant/core",
+          "files": [
+            "dist",
+            "package.json",
+            "LICENSE"
+          ]
+        },
+        {
+          "from": "packages/widget",
+          "to": "vendor/page-assistant/widget",
+          "files": [
+            "dist",
+            "package.json",
+            "LICENSE"
+          ]
+        }
       ],
-      "locks": [{ "file": "package-lock.json", "prefix": "vendor/page-assistant" }],
-      "uses": { "imports": { "@page-assistant/widget": ["PageAssistant", "capability", "escapeLinkText", "markdownLink", "supabaseChatHistoryAdapter"] } },
+      "locks": [
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        }
+      ],
+      "uses": {
+        "imports": {
+          "@page-assistant/widget": [
+            "PageAssistant",
+            "capability",
+            "escapeLinkText",
+            "markdownLink",
+            "supabaseChatHistoryAdapter"
+          ]
+        }
+      },
       "checkAfterDeploy": "sign in on riffscribe.6x7.gr, go to /studio; the assistant launcher appears and answers."
     },
     {
       "name": "transcriber",
       "repo": "philipposk/transcriber",
       "kind": "submodule",
-      "submodule": { "path": "vendor/page-assistant" },
-      "pins": [{ "file": "scripts/ensure-page-assistant.mjs", "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']", "value": "sha" }],
-      "locks": [{ "file": "package-lock.json", "prefix": "vendor/page-assistant" }],
+      "submodule": {
+        "path": "vendor/page-assistant"
+      },
+      "pins": [
+        {
+          "file": "scripts/ensure-page-assistant.mjs",
+          "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']",
+          "value": "sha"
+        }
+      ],
+      "locks": [
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        }
+      ],
       "uses": {
         "imports": {
-          "@page-assistant/core": ["markdownLink", "Assistant", "InMemoryStore", "generateActionsJson", "generateLlmTxt"],
-          "@page-assistant/server": ["synthesize", "transcribe", "routerFromEnv"],
-          "@page-assistant/widget": ["PageAssistant", "mountVoiceSettingsPanel"]
+          "@page-assistant/core": [
+            "markdownLink",
+            "Assistant",
+            "InMemoryStore",
+            "generateActionsJson",
+            "generateLlmTxt"
+          ],
+          "@page-assistant/server": [
+            "synthesize",
+            "transcribe",
+            "routerFromEnv"
+          ],
+          "@page-assistant/widget": [
+            "PageAssistant",
+            "mountVoiceSettingsPanel"
+          ]
         }
       },
       "checkAfterDeploy": "sign in on transcriber.6x7.gr; the floating assistant opens and answers."
@@ -56,13 +134,33 @@
       "name": "skinscan",
       "repo": "philipposk/skinscan",
       "kind": "submodule",
-      "submodule": { "path": "vendor/page-assistant" },
-      "pins": [{ "file": "scripts/ensure-page-assistant.mjs", "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']", "value": "sha" }],
-      "locks": [{ "file": "package-lock.json", "prefix": "vendor/page-assistant" }],
+      "submodule": {
+        "path": "vendor/page-assistant"
+      },
+      "pins": [
+        {
+          "file": "scripts/ensure-page-assistant.mjs",
+          "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']",
+          "value": "sha"
+        }
+      ],
+      "locks": [
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        }
+      ],
       "uses": {
         "imports": {
-          "@page-assistant/server": ["routerFromEnv", "synthesize", "transcribe"],
-          "@page-assistant/widget": ["PageAssistant", "supabaseChatHistoryAdapter"]
+          "@page-assistant/server": [
+            "routerFromEnv",
+            "synthesize",
+            "transcribe"
+          ],
+          "@page-assistant/widget": [
+            "PageAssistant",
+            "supabaseChatHistoryAdapter"
+          ]
         }
       },
       "checkAfterDeploy": "open skinscan.6x7.gr; the assistant opens and answers."
@@ -71,16 +169,41 @@
       "name": "paperassistant",
       "repo": "philipposk/PaperAssistant",
       "kind": "submodule",
-      "submodule": { "path": "vendor/page-assistant" },
+      "submodule": {
+        "path": "vendor/page-assistant"
+      },
       "locks": [
-        { "file": "package-lock.json", "prefix": "vendor/page-assistant" },
-        { "file": "app/package-lock.json", "prefix": "../vendor/page-assistant" }
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        },
+        {
+          "file": "app/package-lock.json",
+          "prefix": "../vendor/page-assistant"
+        }
       ],
       "uses": {
         "imports": {
-          "@page-assistant/core": ["Assistant", "InMemoryStore", "generateActionsJson", "generateLlmTxt", "normalizeTicket", "capabilitySchemaProblems"],
-          "@page-assistant/server": ["synthesize", "transcribe", "openaiProvider"],
-          "@page-assistant/widget": ["capability", "CHAT_HISTORY_MODE_STORAGE_KEY", "PageAssistant", "mountVoiceSettingsPanel", "supabaseChatHistoryAdapter"]
+          "@page-assistant/core": [
+            "Assistant",
+            "InMemoryStore",
+            "generateActionsJson",
+            "generateLlmTxt",
+            "normalizeTicket",
+            "capabilitySchemaProblems"
+          ],
+          "@page-assistant/server": [
+            "synthesize",
+            "transcribe",
+            "openaiProvider"
+          ],
+          "@page-assistant/widget": [
+            "capability",
+            "CHAT_HISTORY_MODE_STORAGE_KEY",
+            "PageAssistant",
+            "mountVoiceSettingsPanel",
+            "supabaseChatHistoryAdapter"
+          ]
         }
       },
       "checkAfterDeploy": "open PaperAssistant; the assistant opens and answers."
@@ -89,25 +212,102 @@
       "name": "daybook",
       "repo": "philipposk/daybook",
       "kind": "submodule",
-      "submodule": { "path": "vendor/page-assistant" },
-      "locks": [{ "file": "package-lock.json", "prefix": "vendor/page-assistant" }],
-      "uses": { "imports": { "@page-assistant/server": ["transcribe", "synthesize"] } },
+      "submodule": {
+        "path": "vendor/page-assistant"
+      },
+      "locks": [
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        }
+      ],
+      "uses": {
+        "imports": {
+          "@page-assistant/server": [
+            "transcribe",
+            "synthesize"
+          ]
+        }
+      },
       "checkAfterDeploy": "sign in on daybook.6x7.gr; the assistant opens and answers."
     },
     {
       "name": "psycscope",
       "repo": "philipposk/psycscope",
       "kind": "pin",
-      "pins": [{ "file": "scripts/ensure-page-assistant.mjs", "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']", "value": "sha" }],
-      "locks": [{ "file": "package-lock.json", "prefix": "vendor/page-assistant" }],
+      "pins": [
+        {
+          "file": "scripts/ensure-page-assistant.mjs",
+          "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']",
+          "value": "sha"
+        }
+      ],
+      "locks": [
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        }
+      ],
       "uses": {
         "imports": {
-          "@page-assistant/core": ["generateActionsJson", "generateLlmTxt"],
-          "@page-assistant/server": ["routerFromEnv", "synthesize", "transcribe"],
-          "@page-assistant/widget": ["PageAssistant", "supabaseChatHistoryAdapter"]
+          "@page-assistant/core": [
+            "generateActionsJson",
+            "generateLlmTxt"
+          ],
+          "@page-assistant/server": [
+            "routerFromEnv",
+            "synthesize",
+            "transcribe"
+          ],
+          "@page-assistant/widget": [
+            "PageAssistant",
+            "supabaseChatHistoryAdapter"
+          ]
         }
       },
       "checkAfterDeploy": "open psycscope; the assistant opens and answers."
+    },
+    {
+      "name": "greenpert",
+      "repo": "philipposk/greenpert",
+      "kind": "submodule",
+      "submodule": {
+        "path": "vendor/page-assistant"
+      },
+      "pins": [
+        {
+          "file": "scripts/ensure-page-assistant.mjs",
+          "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']",
+          "value": "sha"
+        }
+      ],
+      "locks": [
+        {
+          "file": "package-lock.json",
+          "prefix": "vendor/page-assistant"
+        }
+      ],
+      "uses": {
+        "imports": {
+          "@page-assistant/core": [
+            "Assistant",
+            "InMemoryStore",
+            "normalizeTicket",
+            "capabilitySchemaProblems",
+            "feedbackWellKnown",
+            "generateActionsJson",
+            "generateLlmTxt",
+            "ticketsFromRun"
+          ],
+          "@page-assistant/server": [
+            "routerFromEnv"
+          ],
+          "@page-assistant/widget": [
+            "PageAssistant"
+          ]
+        }
+      },
+      "checkAfterDeploy": "sign in on greenpert; the assistant opens and answers, and signed out there is no assistant."
     }
   ]
 }
