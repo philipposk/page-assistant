@@ -1,6 +1,6 @@
 {
   "name": "@page-assistant/mcp",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "MCP server exposing page-assistant agent endpoint to Cursor, Claude Desktop, etc.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },

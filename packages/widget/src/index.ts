@@ -43,8 +43,6 @@ import type { ChatHistoryAdapter } from "./chatHistoryAccount.js";
 import { formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
 import { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
-// This module's own exports, so the script-tag global can carry all of them (see the end).
-import * as widgetExports from "./index.js";
 
 export interface PageAssistantConfig {
   serverUrl: string;
@@ -1190,8 +1188,8 @@ function stripAttachmentDump(content: string): string {
   return head + (names.length ? `\n📎 ${names.join(", ")}` : "");
 }
 
-// The script-tag build's handle is `window.PageAssistant`, so it carries every export of this
-// module, not a hand-kept subset. 0.6.0's subset lacked `supabaseChatHistoryAdapter`, so an app
-// that vendors the bundle had no adapter to pass, and without one the widget quietly keeps chats
-// on the device. On a name clash the controller's own methods win.
-if (typeof window !== "undefined") (window as any).PageAssistant = { ...widgetExports, ...PageAssistant };
+// Imported as a module, the controller is also reachable as `window.PageAssistant`. The script-tag
+// build puts every export there instead (src/global.ts). This module must never import itself to
+// do that: bundlers that split a module's code from its re-exports (Next.js Turbopack) run the
+// spread before the re-exports exist, and the whole import throws.
+if (typeof window !== "undefined") (window as any).PageAssistant = PageAssistant;
