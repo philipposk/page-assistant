@@ -15,7 +15,7 @@
   "scripts": {
     "build": "npm run build -w packages/core && npm run build -w packages/widget && npm run build -w packages/server && npm run build -w packages/mcp && npm run build -w packages/cli",
     "typecheck": "tsc -b packages/core packages/widget packages/server && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/mcp/tsconfig.json",
-    "test": "node --test packages/core/test/*.test.mjs packages/widget/test/*.test.mjs",
+    "test": "node --test packages/core/test/*.test.mjs packages/widget/test/*.test.mjs scripts/propagate/*.test.mjs",
     "dev:server": "npm run dev -w packages/server"
   },
   "devDependencies": {
