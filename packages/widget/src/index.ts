@@ -214,7 +214,7 @@ export { capability } from "./capability.js";
 export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
 export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
 export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText, type ReplySegment, type LinkPolicy } from "@page-assistant/core";
-export { renderReply, followLink, type ReplyLinkOptions } from "./replyLinks.js";
+export { renderReply, followLink, replyExcerpt, type ReplyLinkOptions } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
@@ -318,11 +318,15 @@ class PageAssistantController {
   private assistantSettingsKey: string;
   private onSettingsChange: () => void;
   private onAssistantSettingsChange: () => void;
-  private lastTurn?: { text: string; attachments?: FileAttachment[] };
+  private lastTurn?: { text: string; attachments?: FileAttachment[]; askMeta?: AskMeta };
   private greetedChatId: string | null = null;
   private notedSttFallback = false;
   private notedBrowserFallback = false;
   private destroyed = false;
+  /** True while a chat turn (typed, voice, or ask()) is on its way to the assistant. */
+  private turnInFlight = false;
+  /** ask() calls made while a turn is running, run in order once it finishes. */
+  private askQueue: Array<() => void> = [];
   /** English defaults merged with whatever the host translated. */
   private strings: WidgetStrings = DEFAULT_STRINGS;
 
@@ -531,6 +535,7 @@ class PageAssistantController {
     this.voice?.stop();
     this.voice = undefined;
     this.pending = undefined;
+    this.askQueue = []; // never run a queued ask() against a torn-down widget
     // Close any settings modal we may have opened so its shadow host + listeners don't leak.
     closeAssistantSettingsModal();
     closeVoiceSettingsModal();
@@ -558,6 +563,34 @@ class PageAssistantController {
         this.voice = new Voice(vo);
       }
     }
+  }
+
+  /**
+   * Ask the assistant a question from code, exactly as if the visitor had typed it: same
+   * grounding loop, capabilities, verbatim rendering, chat history and links. The message
+   * appears in the chat as a user turn, and the reply as an assistant turn.
+   *
+   * `open: true` opens the panel first, like typing does (default false — the visitor
+   * doesn't see the question unless you ask for that). `notify` (default true) controls
+   * the closed-panel reply bubble + unread badge described on `WidgetUI`; pass `false` for
+   * an ask() the visitor doesn't need telling about.
+   *
+   * Empty (or all-whitespace) text is ignored. A turn already running — typed, voice, or a
+   * previous ask() — is not interrupted: this call queues behind it and runs once it's
+   * done, so two turns are never interleaved into history.
+   */
+  ask(text: string, opts: { open?: boolean; notify?: boolean } = {}): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    const trimmed = text.trim();
+    if (!trimmed) return Promise.resolve();
+    if (opts.open) this.ui.toggle(true);
+    const askMeta: AskMeta = { notify: opts.notify !== false };
+    if (this.turnInFlight) {
+      return new Promise<void>((resolve) => {
+        this.askQueue.push(() => resolve(this.handleUser(trimmed, undefined, askMeta)));
+      });
+    }
+    return this.handleUser(trimmed, undefined, askMeta);
   }
 
   private newChat() {
@@ -821,7 +854,18 @@ class PageAssistantController {
     };
   }
 
-  private async handleUser(text: string, attachments?: FileAttachment[]) {
+  /** Serializes turns: typed, voice, and ask() all funnel through here, one at a time. */
+  private async handleUser(text: string, attachments?: FileAttachment[], askMeta?: AskMeta) {
+    this.turnInFlight = true;
+    try {
+      await this.handleUserTurn(text, attachments, askMeta);
+    } finally {
+      this.turnInFlight = false;
+      this.askQueue.shift()?.();
+    }
+  }
+
+  private async handleUserTurn(text: string, attachments?: FileAttachment[], askMeta?: AskMeta) {
     if (this.pending) {
       // A new message supersedes a stale pending confirmation — clear its live buttons.
       this.clearPending();
@@ -829,7 +873,7 @@ class PageAssistantController {
     }
     const message = formatAttachmentsForPrompt(text, attachments ?? []);
     if (!message.trim()) return;
-    this.lastTurn = { text, attachments };
+    this.lastTurn = { text, attachments, askMeta };
     this.ui.addMessage("user", text + (attachments?.length ? `\n📎 ${attachments.map((a) => a.name).join(", ")}` : ""));
     this.ui.setState("thinking");
     this.ui.setBusy(true);
@@ -858,6 +902,7 @@ class PageAssistantController {
       }
       this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
+      this.notifyReplyIfClosed(res.message, askMeta);
       await this.say(res.message);
       this.track("message_sent", { len: message.length });
     } catch (e) {
@@ -869,10 +914,25 @@ class PageAssistantController {
     }
   }
 
+  /**
+   * Reply bubble + unread badge for a reply landing while the panel is closed. An ask()'d
+   * reply gets both, unless the caller passed `notify: false` (then neither). A reply to
+   * what the visitor actually typed always just marks the badge — closing the panel
+   * mid-turn shouldn't silently drop the fact that an answer came back.
+   */
+  private notifyReplyIfClosed(message: string, askMeta?: AskMeta) {
+    if (this.ui.isOpen()) return;
+    if (askMeta) {
+      if (askMeta.notify) this.ui.showReplyPreview(message);
+    } else {
+      this.ui.markUnread();
+    }
+  }
+
   private retryLastTurn() {
     if (!this.lastTurn) return;
-    const { text, attachments } = this.lastTurn;
-    this.handleUser(text, attachments);
+    const { text, attachments, askMeta } = this.lastTurn;
+    this.handleUser(text, attachments, askMeta);
   }
 
   /** Map any error to a plain-English message + retry affordance. */
@@ -1028,6 +1088,11 @@ interface Turn {
   userGen: number;
 }
 
+/** Carried through a turn started by `ask()`, so its reply can be told apart from a typed one. */
+interface AskMeta {
+  notify: boolean;
+}
+
 let instance: PageAssistantController | undefined;
 
 export const PageAssistant = {
@@ -1038,6 +1103,14 @@ export const PageAssistant = {
   },
   configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>) {
     instance?.updateConfig(patch);
+  },
+  /**
+   * Ask the assistant a question from code, the same as if the visitor had typed it.
+   * `open: true` opens the panel first; `notify: false` skips the closed-panel reply
+   * bubble + unread badge for this call. See `PageAssistantController.ask`.
+   */
+  ask(text: string, opts?: { open?: boolean; notify?: boolean }): Promise<void> {
+    return instance?.ask(text, opts) ?? Promise.resolve();
   },
   /**
    * Re-check who is signed in and apply the chat-history mode that follows. Call it after

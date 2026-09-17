@@ -2,10 +2,10 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
-## 0.6.2 — Importing the widget works in Next.js again
+## 0.7.2 — Importing the widget works in Next.js again
 
 Found in transcriber.6x7.gr, which imports `@page-assistant/widget` in a Next.js 16 app. All
-packages bumped `0.6.1 → 0.6.2` together.
+packages bumped `0.7.1 → 0.7.2` together.
 
 - **`import("@page-assistant/widget")` no longer throws under Turbopack.** 0.6.1 built the
   full `window.PageAssistant` at the end of `index.ts` by importing the module into itself and
@@ -18,6 +18,47 @@ packages bumped `0.6.1 → 0.6.2` together.
   `window.PageAssistant` to the controller only, as it did before 0.6.1.
 - **A test fails if any module but `src/global.ts` imports the package index**, or if the built
   `dist/index.js` imports itself.
+
+## 0.7.1 — Opening shows the latest reply
+
+- Opening the panel (from the launcher, the reply bubble or `ask({ open: true })`) now scrolls the
+  transcript to the latest message. A reply that arrived while the panel was closed could not
+  scroll the hidden log, so tapping the reply bubble opened the chat at its oldest message.
+
+## 0.7.0 — Ask the assistant from code
+
+A host page can now put words in the visitor's mouth — a search with no results, an empty
+state, anything your own code decides is worth asking about — without the visitor typing
+it, and without popping the panel open uninvited. All packages bumped `0.6.1 → 0.7.0`
+together.
+
+- **`PageAssistant.ask(text, opts?)`**, and the same instance method on the controller
+  `PageAssistant.init()` returns. Sends `text` through exactly the path a typed message
+  takes — same capabilities, grounding loop, chat history and link rendering — so the
+  question and its reply appear in the transcript like any other turn.
+  - `opts.open` (default `false`): open the panel first, the way clicking in and typing
+    would.
+  - `opts.notify` (default `true`): show the closed-panel reply bubble + unread badge
+    (below) for this call's reply. `false` for an `ask()` the visitor doesn't need told
+    about.
+  - Empty (or whitespace-only) text is ignored. A call made while a turn is already
+    running — typed, voice, or a previous `ask()` — is queued rather than raced, so two
+    turns never interleave into history.
+  - On the script-tag build, `window.PageAssistant.ask` works the same way.
+- **Reply bubble + unread badge.** When the panel is closed and an `ask()`'s reply lands
+  (with `notify` not `false`), a small speech bubble appears by the launcher: the first
+  ~120 characters of the reply as plain text — a reply's markdown links show as their
+  label, never a raw URL — with a small × to dismiss it. The launcher also gets a numeric
+  unread badge (1, 2, …), which an ordinary typed reply bumps too if the visitor closed
+  the panel while it was still loading (no bubble for that case — there's no ask() text
+  to preview). Clicking the bubble or the launcher opens the panel (scrolled to the new
+  reply, since the log was already scrolled there when it arrived) and clears both;
+  dismissing the bubble with × keeps the badge. The bubble is a `role="status"`,
+  `aria-live="polite"` region built around a real `<button>` so it has an accessible name
+  and announces without stealing focus, respects `prefers-reduced-motion` (no pop-in), and
+  its max-width keeps it inside a ~375px viewport.
+- New strings (English defaults, overridable via the existing `strings` option):
+  `replyBubbleDismiss`, `unreadReply`, `unreadReplies`.
 
 ## 0.6.1 — The script-tag global carries everything
 

@@ -109,6 +109,30 @@ npm install @page-assistant/widget @page-assistant/server @page-assistant/core
 
 On first open the widget runs a same-origin scan (`fullScan()`): headings, nav links one level deep, and every interactive control with a stable selector. That map is fed to the model so the assistant understands apps it wasn't hand-integrated into. Integrated apps get it too — it just makes the assistant smarter about what's clickable.
 
+## Asking the assistant from code
+
+`PageAssistant.ask(text, opts?)` sends a message the same way a typed one goes in — same
+capabilities, grounding, chat history and rendered links — without the visitor typing it.
+Useful for "your search found nothing, want to ask the assistant instead?" or any other
+moment your own code decides the assistant should speak up:
+
+```javascript
+searchInput.addEventListener("search-empty", (e) => {
+  PageAssistant.ask(`No results for "${e.detail.query}". What do you have similar to this?`);
+});
+```
+
+- `open: true` opens the panel first, like the visitor clicking in and typing would
+  (default `false`: the question is asked, but the panel doesn't pop open on its own).
+- While the panel stays closed, the reply shows as a small preview bubble by the launcher
+  plus an unread count, so the visitor knows something came back without being interrupted.
+  Pass `notify: false` to skip that for an ask() that doesn't need announcing.
+- Empty text is ignored. Calling `ask()` again before the last one's reply has landed
+  queues it — it runs right after, never alongside.
+
+In a bundler: `import { PageAssistant } from "@page-assistant/widget"`, then
+`PageAssistant.ask(...)` the same way.
+
 ## llm.txt — let other agents use your app
 
 If you give the **server** your capabilities + metadata, it serves:
@@ -350,7 +374,7 @@ version tag:
 ```bash
 # bump every package to the new version first (root + all 5 packages + internal pins),
 # commit, then:
-git tag v0.6.1 && git push --tags
+git tag v0.7.0 && git push --tags
 ```
 
 The workflow builds, typechecks, tests, and `npm publish`es core → widget → server →
