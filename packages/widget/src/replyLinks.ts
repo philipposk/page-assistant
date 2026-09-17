@@ -3,7 +3,7 @@
 // Nodes are made with createElement/createTextNode and textContent only — reply text is
 // never parsed as HTML.
 
-import { parseLinks, safeLinkHref } from "@page-assistant/core";
+import { parseLinks, safeLinkHref, linkText } from "@page-assistant/core";
 
 export interface ReplyLinkOptions {
   /** Origins on which absolute http(s) links are allowed, besides same-origin paths. */
@@ -40,6 +40,18 @@ export function renderReply(parent: HTMLElement, text: string, opts: ReplyLinkOp
     });
     parent.appendChild(a);
   }
+}
+
+const REPLY_EXCERPT_MAX = 120;
+
+/**
+ * A reply as a short plain-text excerpt, for the closed-panel notification bubble
+ * (`ask()`'s reply preview). Links read as their label — never a raw URL — whitespace is
+ * collapsed, and anything past `max` characters is cut with a trailing "…".
+ */
+export function replyExcerpt(text: string, max: number = REPLY_EXCERPT_MAX): string {
+  const plain = linkText(text).replace(/\s+/g, " ").trim();
+  return plain.length > max ? plain.slice(0, max).trimEnd() + "…" : plain;
 }
 
 /** Navigate with the host's handler; if it throws or rejects, do a normal page load. */

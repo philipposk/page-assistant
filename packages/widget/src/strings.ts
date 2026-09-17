@@ -15,6 +15,14 @@ export interface WidgetStrings {
   exportChat: string;
   historyToggle: string;
 
+  // --- Reply bubble + unread badge (ask(), and any reply while the panel is closed) ------
+  /** aria-label for the reply bubble's small × button. Dismisses the bubble, keeps the badge. */
+  replyBubbleDismiss: string;
+  /** Appended to the launcher's aria-label for exactly one unread reply. */
+  unreadReply: string;
+  /** Appended to the launcher's aria-label for more than one unread reply. `{count}` is the total. */
+  unreadReplies: string;
+
   // --- Composer ------------------------------------------------------------
   attach: string;
   /** `{name}` is the attachment filename. */
@@ -207,6 +215,10 @@ export const DEFAULT_STRINGS: WidgetStrings = {
   settings: "Assistant settings",
   exportChat: "Export chat",
   historyToggle: "Toggle chat history",
+
+  replyBubbleDismiss: "Dismiss reply preview",
+  unreadReply: "1 new reply",
+  unreadReplies: "{count} new replies",
 
   attach: "Attach file",
   removeAttachment: "Remove attachment {name}",
