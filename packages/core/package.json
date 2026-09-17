@@ -1,6 +1,6 @@
 {
   "name": "@page-assistant/core",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Grounded assistant brain: capability registry, anti-hallucination tool loop, llm.txt generator.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },

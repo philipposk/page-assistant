@@ -13,7 +13,7 @@ import type {
 import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
 import { oneLine } from "./text.js";
 import { DEFAULT_SCRUB_RULES, scrubText, type ScrubRule } from "./scrub.js";
-import { linkText } from "./links.js";
+import { linkText, parseLinks, insertLinkForMention } from "./links.js";
 import { VocabularyResolver, type VocabularyOption } from "./vocabulary.js";
 
 const MAX_TOOL_ROUNDS = 6;
@@ -227,9 +227,11 @@ export class Assistant {
       accUsage(out.usage, out.provider);
 
       if (!out.toolCalls.length) {
-        // Final text. Validate against everything the tools actually returned.
-        const { text, wasCorrected } = validateFactualText(out.text, invocations);
-        corrected = corrected || wasCorrected;
+        // Final text. Validate against everything the tools actually returned, then put
+        // back any link the model kept the name for but dropped the markup of.
+        const { text: factual, wasCorrected: numbersFixed } = validateFactualText(out.text, invocations);
+        const { text, wasCorrected: linksFixed } = restoreDroppedLinks(factual, invocations);
+        corrected = corrected || numbersFixed || linksFixed;
         return { message: this.say(text), invocations, corrected, usage: finalUsage() };
       }
 
@@ -500,6 +502,54 @@ export function validateFactualText(
 
   // The model asserted numbers no tool produced. Replace prose with trusted renders.
   return { text: rendered.join("\n\n"), wasCorrected: true };
+}
+
+/**
+ * Put back a link the model kept the name for but dropped the markup of. A capability's
+ * render() is trusted for its links the same way it is for its numbers: a reply that still
+ * says "Aphrodite Garden" but no longer makes it a link has lost the one thing the visitor
+ * wanted from that sentence. This appends nothing and invents nothing — it only turns an
+ * already-present plain mention of a trusted label into the link render() gave it, the
+ * first such mention per link, and only outside a link the model wrote itself.
+ *
+ * Skips a verbatim capability's render(): validateFactualText already replaced the whole
+ * reply with it above, links included, so there is nothing left here to restore.
+ */
+export function restoreDroppedLinks(
+  text: string,
+  invocations: ToolInvocation[]
+): { text: string; wasCorrected: boolean } {
+  const rendered = invocations
+    .filter((i) => i.ok && i.rendered && !i.verbatim)
+    .map((i) => i.rendered!) as string[];
+  if (!rendered.length) return { text, wasCorrected: false };
+
+  // Every link a trusted render offered, first occurrence per destination — a place named
+  // twice (a search hit and an "also worth a look" aside) keeps the label of its first
+  // mention.
+  const trusted: Array<{ label: string; href: string }> = [];
+  const seenHref = new Set<string>();
+  for (const r of rendered) {
+    for (const seg of parseLinks(r)) {
+      if (seg.type !== "link" || seenHref.has(seg.href)) continue;
+      seenHref.add(seg.href);
+      trusted.push(seg);
+    }
+  }
+  if (!trusted.length) return { text, wasCorrected: false };
+
+  const already = new Set(parseLinks(text).filter((s) => s.type === "link").map((s) => s.href));
+  let out = text;
+  let changed = false;
+  for (const { label, href } of trusted) {
+    if (already.has(href)) continue;
+    const next = insertLinkForMention(out, label, href);
+    if (next === null) continue;
+    out = next;
+    changed = true;
+    already.add(href); // a second, later mention of the same place stays plain text
+  }
+  return { text: out, wasCorrected: changed };
 }
 
 /**
