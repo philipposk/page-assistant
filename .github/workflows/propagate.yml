@@ -1,0 +1,83 @@
+name: Propagate
+
+# Opens a PR in every app listed in scripts/propagate/apps.json whenever a version bump lands on
+# main, moving that app to the new version. Nothing is merged: each app's own checks and preview
+# run on its PR, and a person merges it.
+#
+# Needs the repo secret APPS_PR_TOKEN: a fine-grained GitHub token for philipposk with
+# "Contents: read and write" and "Pull requests: read and write" on every app repo in apps.json.
+#
+# Run it by hand from the Actions tab to retry, pick some apps, or dry-run (nothing pushed).
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: "Comma-separated app names from apps.json (blank = all)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run: build and check, push nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: propagate
+  cancel-in-progress: false
+
+jobs:
+  propagate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # submodule apps are matched to a version by commit
+
+      - name: Did the version change?
+        id: version
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          now=$(node -p "require('./package.json').version")
+          before=$(git show "${BEFORE:-HEAD^}:package.json" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).version)}catch{console.log('none')}})")
+          echo "Version $before -> $now"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$now" != "$before" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "package.json changed but the version did not; nothing to propagate."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.go == 'true'
+        with:
+          node-version: 22
+
+      # Never hand apps a release that fails its own checks.
+      - if: steps.version.outputs.go == 'true'
+        run: npm ci
+      - if: steps.version.outputs.go == 'true'
+        run: npm run build
+      - if: steps.version.outputs.go == 'true'
+        run: npm run typecheck
+      - if: steps.version.outputs.go == 'true'
+        run: npm test
+      - if: steps.version.outputs.go == 'true'
+        run: node --test packages/server/test/*.test.mjs
+
+      - name: Open PRs in the apps
+        if: steps.version.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.APPS_PR_TOKEN }}
+          APPS: ${{ inputs.apps }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The APPS_PR_TOKEN secret is missing, so no app was updated. See the comment at the top of propagate.yml."
+            exit 1
+          fi
+          gh auth setup-git
+          node scripts/propagate/propagate.mjs --apps "$APPS" $([ "$DRY_RUN" = "true" ] && echo --dry-run)

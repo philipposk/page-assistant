@@ -382,6 +382,31 @@ cli → mcp. It requires a repo secret **`NPM_TOKEN`** (an npm automation token 
 publish rights to the `@page-assistant` scope). Versions that already exist on npm will
 fail the publish, so always bump before tagging.
 
+### Updating the apps that embed it
+
+`.github/workflows/propagate.yml` runs when a version bump lands on `main`. It builds and
+tests this repo, then opens one PR in each app listed in
+[`scripts/propagate/apps.json`](./scripts/propagate/apps.json), moving that app to the new
+version the way it embeds the SDK: copying the script-tag bundle, copying the built packages,
+moving a submodule, or moving a pinned commit, with lockfile versions and pins updated to match.
+Before opening a PR it checks that every name the app uses (its `uses` list) still exists in
+the new version; if one is gone the PR opens as a draft and names it. Nothing is merged: each
+app's own checks and preview run on the PR.
+
+It needs the repo secret **`APPS_PR_TOKEN`**, a fine-grained GitHub token with *Contents* and
+*Pull requests* read and write on the app repos. Without it the run fails and says so.
+
+To see what each app would get without pushing anything:
+
+```bash
+npm run build
+node scripts/propagate/propagate.mjs --dry-run            # all apps
+node scripts/propagate/propagate.mjs --dry-run --apps topia --keep   # keep the clone to inspect
+```
+
+A new app that embeds the SDK goes into `apps.json`; `npm test` checks the list and that every
+app's `uses` names exist in the current build.
+
 ## License
 
 MIT © Philippos Kontistakis
