@@ -149,6 +149,23 @@ new page after a full load; on a phone (≤520px) it closes so the page is visib
 reopening shows the same conversation. Cmd/Ctrl/middle-click open a new tab as usual. With
 `chatHistoryMode: "off"` a full page load starts a new conversation — pass `onNavigate`.
 
+**Asking the assistant from code.** `PageAssistant.ask(text, opts?)` sends a message
+through the same path as one the visitor typed — same capabilities, grounding, chat
+history and rendered links:
+
+```typescript
+searchInput.addEventListener("search-empty", (e) => {
+  PageAssistant.ask(`No results for "${e.detail.query}". What do you have similar to this?`);
+});
+```
+
+`open: true` opens the panel first (default `false`). While the panel is closed, the
+reply shows as a small preview bubble by the launcher with an unread count, so the
+visitor learns something came back without an interruption; pass `notify: false` to skip
+that for a background ask() the visitor doesn't need told about. Empty text is ignored,
+and an `ask()` made while a turn is already running (typed, voice, or a previous `ask()`)
+queues behind it rather than racing it.
+
 **Workspace vocabulary** (recommended when users create their own tags, folders,
 statuses or projects): give the model the real values, so "the Q3 shortlist" maps onto a
 real tag instead of a question back to the user.
