@@ -163,6 +163,11 @@ function apply(dir, app) {
     }
   }
   if (app.kind === "submodule") {
+    // A clear message beats git's "cannot add to the index": it means the app has no submodule
+    // there (yet), so either the embed change hasn't merged or apps.json names the wrong path.
+    if (!git(dir, "ls-tree", "HEAD", app.submodule.path)) {
+      throw new Error(`no submodule at ${app.submodule.path} on the app's default branch`);
+    }
     git(dir, "update-index", "--cacheinfo", `160000,${sha},${app.submodule.path}`);
   }
   for (const lock of app.locks ?? []) {
