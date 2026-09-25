@@ -1,6 +1,6 @@
 {
   "name": "@page-assistant/cli",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "CLI for page-assistant: health check, chat, serve proxy.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },

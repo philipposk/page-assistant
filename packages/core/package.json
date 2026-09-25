@@ -1,13 +1,20 @@
 {
   "name": "@page-assistant/core",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Grounded assistant brain: capability registry, anti-hallucination tool loop, llm.txt generator.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
   "files": ["dist", "LICENSE", "README.md"],
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/core" },

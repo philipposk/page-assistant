@@ -1,3 +1,7 @@
+
+## 0.7.4 — Node test runners can import core
+
+- **@page-assistant/core** `exports` now includes `require` and `default` so tools like tsx can load the package in Node tests.
 # Changelog
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
