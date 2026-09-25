@@ -2,6 +2,20 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.7.3 — Contextual UI help for host apps
+
+Patterns from production use in Daybook, generalised for every embedder.
+
+- **`explainUiCapability()`** and **`pageStateHint()`** in `@page-assistant/core` — factory
+  for read-only `explain_*` tools (`verbatim: true`, no parameters) and screen hints in
+  `getPageState()`.
+- **[docs/CONTEXTUAL_HELP.md](./docs/CONTEXTUAL_HELP.md)** — cookbook: hover tooltips,
+  knowledge, explain capabilities, suggestion chips, llm.txt.
+- **`docs/snippets/HelpTip.tsx`** + **`help-tip.css`** — portal-positioned `?` tooltips
+  (fixed positioning, auto-flip) for React hosts.
+- **`examples/contextual-help.mjs`** — minimal runnable example.
+- **INTEGRATION.md §8** and **AGENTS.md** point agents at the above.
+
 ## 0.7.2 — Importing the widget works in Next.js again
 
 Found in transcriber.6x7.gr, which imports `@page-assistant/widget` in a Next.js 16 app. All

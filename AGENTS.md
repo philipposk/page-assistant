@@ -16,6 +16,10 @@ Make the assistant able to do **everything a signed-in user could do** on that s
 4. **Wire the widget** with `PageAssistant.init({ serverUrl, capabilities, voice: true, settingsPageUrl })`. Built-in voice settings and gear modal work out of the box.
 5. **Publish discovery**: serve `llm.txt` and `/.well-known/llm-actions.json` so other agents can find capabilities.
 6. **Tune persona + knowledge** so the assistant understands the product; use `getPageState()` for current view context.
+7. **Contextual UI help** for confusing controls: copy `docs/snippets/HelpTip.tsx`, add
+   `explainUiCapability()` tools for state-dependent explanations, extend `knowledge` and
+   `llm.txt`, and nudge the model from `getPageState()` — see
+   [docs/CONTEXTUAL_HELP.md](./docs/CONTEXTUAL_HELP.md).
 
 ## Do not
 

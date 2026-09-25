@@ -339,6 +339,33 @@ import { generateLlmTxt, generateActionsJson } from "@page-assistant/core";
       move that state into a shared layer (edge/Redis) — see the "Scaling" section in
       [SECURITY.md](./SECURITY.md).
 
+## 8. Contextual UI help (host app)
+
+The widget does not ship hover tooltips or onboarding tours — those live in your UI.
+Teach the assistant about confusing flows so it can answer when someone asks (or taps a
+suggestion chip) instead of guessing. Full cookbook:
+**[docs/CONTEXTUAL_HELP.md](./docs/CONTEXTUAL_HELP.md)**.
+
+**Three layers:**
+
+1. **`knowledge`** — procedural text in `PageAssistant.init()`. What greyed-out fields
+   mean, where setup lives, which `explain_*` tool to call. No per-user numbers.
+
+2. **`getPageState()`** — current path/screen plus an optional `hint` string. Use
+   `pageStateHint()` from `@page-assistant/core` to nudge the model ("on /day, run
+   `explain_pos_card_field` if they ask about the card field").
+
+3. **`explainUiCapability()`** — factory for read-only tools whose `run()` loads real
+   org state and whose `render()` returns the exact explanation. Sets `verbatim: true`
+   automatically. See `examples/contextual-help.mjs`.
+
+Also add **suggestion chips** for common "how does this work?" questions and a matching
+section in **`llm.txt`** for external agents.
+
+Copy **`docs/snippets/HelpTip.tsx`** and **`help-tip.css`** for portal-positioned `?`
+tooltips that do not clip at the top of the page. Reference:
+[Daybook](https://github.com/philipposk/daybook).
+
 ## What you get for free
 
 - Grounding loop + anti-hallucination validator

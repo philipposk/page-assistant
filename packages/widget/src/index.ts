@@ -212,7 +212,13 @@ const REOPEN_WINDOW_MS = 30_000;
 
 export { capability } from "./capability.js";
 export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
-export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
+export {
+  DEFAULT_SCRUB_RULES,
+  PLAIN_TEXT_SCRUB_RULES,
+  explainUiCapability,
+  pageStateHint,
+} from "@page-assistant/core";
+export type { ExplainUiCapabilityOptions } from "@page-assistant/core";
 export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText, type ReplySegment, type LinkPolicy } from "@page-assistant/core";
 export { renderReply, followLink, replyExcerpt, type ReplyLinkOptions } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
