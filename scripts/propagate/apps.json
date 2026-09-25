@@ -215,6 +215,13 @@
       "submodule": {
         "path": "vendor/page-assistant"
       },
+      "pins": [
+        {
+          "file": "scripts/ensure-page-assistant.mjs",
+          "pattern": "const PIN = [\"']([0-9a-f]{40})[\"']",
+          "value": "sha"
+        }
+      ],
       "locks": [
         {
           "file": "package-lock.json",
