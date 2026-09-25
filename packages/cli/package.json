@@ -15,7 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@page-assistant/server": "0.7.3"
+    "@page-assistant/server": "0.7.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
