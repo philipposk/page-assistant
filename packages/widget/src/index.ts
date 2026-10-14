@@ -432,9 +432,20 @@ class PageAssistantController {
     };
 
     this.ui = new WidgetUI(cfg.assistantName ?? cfg.appName ?? "Assistant", {
-      onSend: (t, attachments) => this.handleUser(t, attachments),
-      onMic: () => this.toggleMic(),
-      onConfirm: (ok) => this.handleConfirm(ok),
+      // Taps and key presses that lead to a spoken reply prime speech while they are still a
+      // user gesture (see Voice.prime).
+      onSend: (t, attachments) => {
+        this.primeVoice();
+        return this.handleUser(t, attachments);
+      },
+      onMic: () => {
+        this.primeVoice();
+        return this.toggleMic();
+      },
+      onConfirm: (ok) => {
+        if (ok) this.primeVoice();
+        return this.handleConfirm(ok);
+      },
       onToggle: (open) => this.handleToggle(open),
       onSettings: () =>
         cfg.onSettings?.() ??
@@ -449,6 +460,7 @@ class PageAssistantController {
           : openVoiceSettingsModal(settingsUiOpts)),
       onTtsToggle: (on) => {
         this.ttsEnabled = on;
+        this.primeVoice();
       },
       onNewChat: () => this.newChat(),
       onSelectChat: (id) => this.switchChat(id),
@@ -619,7 +631,10 @@ class PageAssistantController {
     this.greetedChatId = this.activeChatId;
     if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
     if (this.cfg.suggestions?.length) {
-      this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+      this.ui.addSuggestions(this.cfg.suggestions, (t) => {
+        this.primeVoice();
+        return this.handleUser(t);
+      });
     }
   }
 
@@ -937,6 +952,7 @@ class PageAssistantController {
 
   private retryLastTurn() {
     if (!this.lastTurn) return;
+    this.primeVoice(); // the Retry button
     const { text, attachments, askMeta } = this.lastTurn;
     this.handleUser(text, attachments, askMeta);
   }
@@ -1016,6 +1032,11 @@ class PageAssistantController {
     } finally {
       this.pending = undefined;
     }
+  }
+
+  /** Only when replies will be read aloud: priming plays silence, which pauses the phone's music. */
+  private primeVoice() {
+    if (this.ttsEnabled) this.voice?.prime();
   }
 
   private async say(text: string) {

@@ -68,7 +68,7 @@ const CSS = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
 .launcher {
-  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(22px + env(safe-area-inset-bottom));
+  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(22px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom));
   width: 60px; height: 60px; border-radius: 50%;
   border: none; cursor: pointer; z-index: 2147483646;
   background: radial-gradient(circle at 30% 30%, var(--pa-launcher-from), var(--pa-launcher-to));
@@ -86,7 +86,7 @@ const CSS = `
 }
 .badge.show { display: flex; }
 .reply-bubble {
-  position: fixed; bottom: calc(92px + env(safe-area-inset-bottom));
+  position: fixed; bottom: calc(92px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom));
   max-width: min(300px, calc(100vw - 44px));
   z-index: 2147483646; display: flex; align-items: flex-start; gap: 2px;
   background: var(--pa-bg-head); color: var(--pa-text); border: 1px solid var(--pa-border);
@@ -113,17 +113,24 @@ const CSS = `
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(94,234,212,.25), 0 8px 28px rgba(13,148,136,.45); } }
 .panel-wrap {
-  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(92px + env(safe-area-inset-bottom));
+  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(92px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom));
   z-index: 2147483646; display: none;
 }
 .panel-wrap.open { display: flex; }
+/* --pa-vvh is the visible height (visualViewport), set by bindViewport; 100vh where there is none. */
 .panel {
   position: relative;
   width: 580px; max-width: calc(100vw - 32px);
-  height: 520px; max-height: calc(100vh - 130px); background: var(--pa-bg); color: var(--pa-text);
+  height: 520px; max-height: calc(var(--pa-vvh, 100vh) - 130px - var(--pa-offset-bottom, 0px) - env(safe-area-inset-bottom)); background: var(--pa-bg); color: var(--pa-text);
   border: 1px solid var(--pa-border); border-radius: 16px;
   display: flex; flex-direction: row; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
+/* Opening on a touch screen focuses the panel, not the text box (see toggle()). */
+.panel:focus { outline: none; }
+/* While the on-screen keyboard covers the page, the launcher and any bottom bar are behind it, so the
+   panel sits just above the keyboard (bindViewport lifts it) and is never taller than what is left. */
+.panel-wrap.kb { bottom: 8px; }
+.panel-wrap.kb .panel { max-height: calc(var(--pa-vvh, 100vh) - 16px - env(safe-area-inset-top)); }
 .panel-body { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .head { padding: 14px 16px; background: var(--pa-bg-head); border-bottom: 1px solid var(--pa-border); font-weight: 600; display:flex; align-items:center; gap:8px; }
 .head .dot { width:8px;height:8px;border-radius:50%;background:#4ade80; }
@@ -163,7 +170,7 @@ const CSS = `
 .attach-tag button { background:none; border:none; color:var(--pa-text-muted); cursor:pointer; font-size:12px; line-height:1; padding:0; }
 .attach-tag button:hover { color:var(--pa-text); }
 .foot { padding: 10px; border-top: 1px solid var(--pa-border); display: flex; gap: 8px; align-items: center; }
-.foot input[type=text] { flex: 1; background: var(--pa-bg-input); border: 1px solid var(--pa-border); color: var(--pa-text); border-radius: 10px; padding: 9px 12px; outline: none; font-size: 16px; }
+.foot input[type=text] { flex: 1; min-width: 0; background: var(--pa-bg-input); border: 1px solid var(--pa-border); color: var(--pa-text); border-radius: 10px; padding: 9px 12px; outline: none; font-size: 16px; }
 .foot input[type=text]:disabled { opacity: .6; }
 .foot button { border: none; border-radius: 10px; padding: 0 12px; cursor: pointer; font-size: 16px; height: 36px; }
 .foot button:disabled { opacity: .5; cursor: default; }
@@ -179,7 +186,7 @@ const CSS = `
 .scanline { position:fixed; left:0; right:0; height:3px; background:linear-gradient(90deg,transparent,#4ade80,transparent); z-index:2147483645; display:none; animation: sweep 1.4s ease-in-out infinite; }
 .scanline.on { display:block; }
 @keyframes sweep { 0%{top:0} 100%{top:100vh} }
-.toast { position:fixed; left:50%; bottom:100px; transform:translateX(-50%); background:var(--pa-bg-head); color:var(--pa-text); border:1px solid var(--pa-border); border-radius:10px; padding:8px 14px; font-size:13px; z-index:2147483647; box-shadow:0 8px 24px rgba(0,0,0,.4); opacity:0; transition:opacity .2s; pointer-events:none; }
+.toast { position:fixed; left:50%; bottom:calc(100px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom)); transform:translateX(-50%); background:var(--pa-bg-head); color:var(--pa-text); border:1px solid var(--pa-border); border-radius:10px; padding:8px 14px; font-size:13px; z-index:2147483647; box-shadow:0 8px 24px rgba(0,0,0,.4); opacity:0; transition:opacity .2s; pointer-events:none; }
 .toast.show { opacity:1; }
 /* Highlight ring for the visual action preview — drawn in the shadow root, never in host DOM. */
 .pa-highlight { position:fixed; z-index:2147483644; border:3px solid var(--pa-accent); border-radius:8px; box-shadow:0 0 0 3px rgba(22,163,74,.35), 0 0 20px rgba(22,163,74,.5); pointer-events:none; transition:all .2s ease; }
@@ -190,8 +197,16 @@ const CSS = `
 .sidebar-scrim.show { display: block; }
 @media (min-width: 521px) { .sidebar-scrim { display: none !important; } }
 @media (max-width: 520px) {
-  .panel { width: calc(100vw - 16px); height: calc(100dvh - 110px); max-height: calc(100dvh - 110px); }
-  .panel-wrap { right: 8px; left: 8px; bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .panel {
+    width: calc(100vw - 16px);
+    height: calc(var(--pa-vvh, 100vh) - 110px - var(--pa-offset-bottom, 0px) - env(safe-area-inset-bottom) - env(safe-area-inset-top));
+    max-height: none;
+  }
+  .panel-wrap { right: 8px; left: 8px; bottom: calc(84px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom)); }
+  .panel-wrap.kb .panel { height: calc(var(--pa-vvh, 100vh) - 16px - env(safe-area-inset-top)); }
+  /* Attach, read-aloud, mic and send beside the text box on a 320–375px screen. */
+  .foot { gap: 6px; padding: 8px; }
+  .foot button { padding: 0 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .launcher.talking, .launcher.thinking, .launcher.scanning { animation: none; }
@@ -298,6 +313,8 @@ export class WidgetUI {
     // NOT aria-modal: this is a non-modal floating panel — the host page stays interactive,
     // so marking it modal would make screen readers treat the whole page as inert.
     this.panel.setAttribute("aria-label", this.title);
+    // Focusable from code only: opening on a touch screen lands here instead of the text box.
+    this.panel.tabIndex = -1;
 
     if (this.opts.chatStore) {
       const handlers: ChatSidebarHandlers = {
@@ -479,15 +496,19 @@ export class WidgetUI {
   }
 
   private bindViewport() {
-    // Keep the panel above the on-screen keyboard on mobile (visualViewport shrinks
-    // when the keyboard opens). Offset the launcher/panel by the covered height.
+    // Keep the whole panel on screen on mobile. visualViewport is what is actually visible: it
+    // shrinks when the on-screen keyboard opens, which the page's own layout does not. The panel
+    // is capped to that height (--pa-vvh) so its header stays on screen, and while the keyboard
+    // covers the page it is lifted to sit just above it ("kb").
     const vv = (window as any).visualViewport as VisualViewport | undefined;
     if (!vv) return;
     this.viewportHandler = () => {
-      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      const px = overlap > 60 ? overlap : 0; // ignore small toolbar jitter
+      const px = keyboardOverlap(window.innerHeight, vv.height, vv.offsetTop);
+      this.host.style.setProperty("--pa-vvh", `${Math.round(vv.height)}px`);
+      this.panelWrap.classList.toggle("kb", px > 0);
       this.panelWrap.style.transform = px ? `translateY(-${px}px)` : "";
     };
+    this.viewportHandler();
     vv.addEventListener("resize", this.viewportHandler);
     vv.addEventListener("scroll", this.viewportHandler);
   }
@@ -505,7 +526,11 @@ export class WidgetUI {
     const first = items[0];
     const last = items[items.length - 1];
     const active = (this.root.activeElement as HTMLElement) ?? document.activeElement;
-    if (e.shiftKey && active === first) {
+    // The panel itself has focus after opening on a touch screen: Tab enters it from either end.
+    if (active === this.panel) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && active === last) {
@@ -695,7 +720,11 @@ export class WidgetUI {
         this.log.scrollTop = this.log.scrollHeight;
       });
       this.lastFocused = (document.activeElement as HTMLElement) ?? undefined;
-      this.input.focus();
+      // On a touch screen, focusing the text box pops the keyboard over half the chat before
+      // anything has been read. Focus the panel instead (screen readers still land inside it);
+      // tapping the box focuses it as usual. With a mouse or keyboard, typing can start at once.
+      if (isTouchOnly()) this.panel.focus({ preventScroll: true });
+      else this.input.focus();
     } else {
       // Closing must not leave a green action-preview ring floating on the host page.
       this.clearHighlight();
@@ -972,6 +1001,23 @@ export class WidgetUI {
 /** The phone layout: the panel fills the screen (same breakpoint as the CSS). */
 function isNarrow(): boolean {
   return typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
+}
+
+/** A phone or tablet with no mouse or trackpad: focusing a text box there opens the keyboard. */
+export function isTouchOnly(): boolean {
+  return typeof matchMedia !== "undefined" && matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+
+/**
+ * How far the on-screen keyboard covers the page, in px: the gap between the bottom of what is
+ * visible (visualViewport) and the bottom of the layout viewport that fixed elements sit on.
+ * 0 below 60px, which is browser toolbars showing and hiding, not a keyboard. Also 0 where the
+ * keyboard shrinks the page itself (an installed web app, Android's resize mode): fixed elements
+ * then move up with it.
+ */
+export function keyboardOverlap(innerHeight: number, visibleHeight: number, visibleTop: number): number {
+  const overlap = Math.max(0, Math.round(innerHeight - visibleHeight - visibleTop));
+  return overlap > 60 ? overlap : 0;
 }
 
 function el<T extends HTMLElement = HTMLElement>(tag: string, cls?: string): T {

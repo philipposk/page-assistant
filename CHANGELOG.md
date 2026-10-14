@@ -1,10 +1,38 @@
+# Changelog
+
+All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
+
+## 0.8.0 — The widget on phones
+
+Found on an iPhone in Catchy (catchy.6x7.gr), which had worked around each of these in its own
+code. All packages bumped `0.7.4 → 0.8.0` together.
+
+- **`--pa-offset-bottom`** moves the launcher, the panel, the reply bubble and toasts up by a
+  host's bottom tab bar, and shortens the panel to match. The launcher used to cover the bar's
+  last tab with no way to move it. Set it on any ancestor (e.g. `body:has(.tab-bar)`); see
+  INTEGRATION.md §4.
+- **Opening the panel on a touch screen no longer opens the keyboard.** It focused the text
+  box, so the keyboard covered half the chat before anything was read. On a device with no
+  mouse or trackpad the panel itself takes focus now (screen readers still land inside it);
+  with a mouse or keyboard, the text box still does.
+- **The panel's header stays on screen with the keyboard up.** The panel was moved up by the
+  keyboard's height but kept its full height, so its top went off screen. It is now capped to
+  what the keyboard leaves visible and sits just above the keyboard. On phones its height also
+  allows for the safe areas (notch, home indicator), which on a `viewport-fit=cover` page pushed
+  the header past the top of the screen.
+- **Attach, read-aloud, mic and send fit beside the text box on a 375px screen.** The text box
+  would not shrink below its default width and pushed mic and send off the edge.
+- **Read-aloud works on iPhones.** Server speech made a new `Audio()` for every reply, which iOS
+  refuses to play outside a tap, so replies were silent. Speech is now unlocked on the tap that
+  asks (send, mic, a suggestion, Retry, Confirm, the read-aloud button — only while read-aloud
+  is on, since playing even silence pauses the phone's music) and every reply plays through that
+  one element. If playback is still refused, the reply is read with the browser's voice.
+- **Stopping speech settles it.** Stopping a server reply (closing the panel, talking over it)
+  left its `speak()` pending forever, and a reply still downloading when stopped played anyway.
 
 ## 0.7.4 — Node test runners can import core
 
 - **@page-assistant/core** `exports` now includes `require` and `default` so tools like tsx can load the package in Node tests.
-# Changelog
-
-All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
 ## 0.7.3 — Contextual UI help for host apps
 

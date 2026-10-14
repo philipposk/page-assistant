@@ -74,6 +74,10 @@ export interface ListenHooks {
 
 const SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
 
+/** 10 ms of silence (8 kHz, 8-bit WAV): played inside a tap to unlock the audio element. */
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+
 /**
  * Resolve the BCP-47 language to use for speech I/O. Called per utterance, never cached:
  * a host that swaps `<html lang>` on a language switch is honoured on the next mic tap.
@@ -116,6 +120,19 @@ export class Voice {
   private speaking = false;
   private currentAudio?: HTMLAudioElement;
   private currentUtterance?: SpeechSynthesisUtterance;
+  /**
+   * The one element server speech plays through. iOS only lets an element play once it has
+   * played inside a tap, and a reply arrives seconds after the tap that asked for it, so a
+   * fresh `new Audio()` per reply was always refused and read-aloud stayed silent. prime()
+   * unlocks this one during a tap; every reply reuses it.
+   */
+  private audioEl?: HTMLAudioElement;
+  private audioUnlocked = false;
+  private synthPrimed = false;
+  /** Ends the server playback in progress and resolves its speak(). */
+  private endPlayback?: () => void;
+  /** Bumped by stop(): a reply still downloading when it changes is never played. */
+  private speakGen = 0;
   private activeRecognition?: any;
   private listenAbort?: AbortController;
   private bargeCleanup?: () => void;
@@ -129,6 +146,50 @@ export class Voice {
   /** The language for this utterance/listen. Resolved now, not at construction. */
   private lang(): string {
     return resolveVoiceLang(this.opts.lang);
+  }
+
+  /**
+   * Call synchronously inside a tap or key press (read-aloud switched on, send, mic) when
+   * replies will be read aloud. iOS lets a page start audio or speech only inside a user
+   * gesture, and a reply arrives outside one. This plays silence through the audio element
+   * server speech uses and speaks a silent utterance, which unlocks both for the page. Each is
+   * done once, so calling it on every tap is cheap. Audio is only touched for server speech:
+   * playing even silence pauses whatever else the phone is playing.
+   */
+  prime() {
+    if (typeof window === "undefined") return;
+    if (!this.synthPrimed && "speechSynthesis" in window) {
+      this.synthPrimed = true;
+      try {
+        const u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        speechSynthesis.speak(u);
+      } catch {
+        /* no speech engine */
+      }
+    }
+    if (this.audioUnlocked || this.speaking || this.opts.ttsMode !== "server" || !this.opts.serverUrl) return;
+    const audio = this.audio();
+    if (!audio) return;
+    this.audioUnlocked = true;
+    try {
+      audio.src = SILENT_WAV;
+      audio.play()?.then(
+        () => {
+          if (audio.src === SILENT_WAV) audio.pause();
+        },
+        () => {
+          this.audioUnlocked = false; // not a gesture after all: the next tap tries again
+        }
+      );
+    } catch {
+      this.audioUnlocked = false;
+    }
+  }
+
+  private audio(): HTMLAudioElement | undefined {
+    if (!this.audioEl && typeof Audio !== "undefined") this.audioEl = new Audio();
+    return this.audioEl;
   }
 
   async speak(text: string, onWord?: (t: string) => void): Promise<void> {
@@ -203,6 +264,7 @@ export class Voice {
   }
 
   private async speakServer(text: string): Promise<void> {
+    const gen = this.speakGen;
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
     let res: Response;
@@ -218,51 +280,56 @@ export class Voice {
         }),
       });
     } catch {
-      return this.speakBrowser(text);
+      return gen === this.speakGen ? this.speakBrowser(text) : undefined;
     }
+    if (gen !== this.speakGen) return; // stopped while the reply was being synthesised
     if (!res.ok) return this.speakBrowser(text);
     const blob = await res.blob();
+    if (gen !== this.speakGen) return;
+    const audio = this.audio();
+    if (!audio) return this.speakBrowser(text);
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    audio.src = url;
     this.currentAudio = audio;
     this.speaking = true;
     return new Promise<void>((resolve) => {
       let settled = false;
-      const done = () => {
-        if (settled) return;
+      /** True the first time only: playback is over, whichever way it ended. */
+      const finish = () => {
+        if (settled) return false;
         settled = true;
+        audio.onended = audio.onerror = null;
+        if (this.currentAudio === audio) this.currentAudio = undefined;
+        this.endPlayback = undefined;
         this.speaking = false;
-        this.currentAudio = undefined;
         this.stopBargeIn();
         URL.revokeObjectURL(url); // free the blob once playback is over/aborted
-        resolve();
+        return true;
       };
+      const done = () => {
+        if (finish()) resolve();
+      };
+      this.endPlayback = done;
       audio.onended = done;
       audio.onerror = done;
-      // Safari can block autoplay: play() rejects and onended never fires. Resolve on
-      // rejection instead of hanging forever with the mascot stuck "talking".
       audio.play().then(
         () => this.startBargeIn(),
-        () => done()
+        // Refused: on iOS, an element that never played inside a tap (prime() was not called,
+        // or the page has been in the background). Read the reply with the browser's voice
+        // rather than not at all. Never hangs with the mascot stuck "talking".
+        () => {
+          if (finish()) this.speakBrowser(text).then(resolve);
+        }
       );
     });
   }
 
   stop() {
+    this.speakGen++;
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     this.currentUtterance = undefined;
-    if (this.currentAudio) {
-      this.currentAudio.pause();
-      const src = this.currentAudio.src;
-      this.currentAudio = undefined;
-      if (src.startsWith("blob:")) {
-        try {
-          URL.revokeObjectURL(src);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
+    this.currentAudio?.pause();
+    this.endPlayback?.(); // resolves the speak() that was playing and frees its blob
     this.speaking = false;
     this.stopBargeIn();
   }
