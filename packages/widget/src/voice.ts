@@ -300,7 +300,7 @@ export class Voice {
         settled = true;
         audio.onended = audio.onerror = null;
         if (this.currentAudio === audio) this.currentAudio = undefined;
-        this.endPlayback = undefined;
+        if (this.endPlayback === done) this.endPlayback = undefined;
         this.speaking = false;
         this.stopBargeIn();
         URL.revokeObjectURL(url); // free the blob once playback is over/aborted
