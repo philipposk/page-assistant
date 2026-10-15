@@ -219,8 +219,15 @@ async function mergeOne(pr) {
   }
   if (ready.verdict !== "ready") return leftOpen(ready.reason ?? "GitHub is still working out whether it can merge");
 
-  // 3. Merge (a merge commit; the branch stays) and find the commit it made.
-  run("gh", ["pr", "merge", pr.url, "--merge", "--match-head-commit", pr.head]);
+  // 3. Merge (a merge commit; the branch stays) and find the commit it made. gh can fail after
+  // GitHub already merged (a dropped connection): then it counts as merged and the deploy is still
+  // watched, so the next app never deploys on top of this one.
+  try {
+    run("gh", ["pr", "merge", pr.url, "--merge", "--match-head-commit", pr.head]);
+  } catch (e) {
+    const state = run("gh", ["pr", "view", pr.url, "--json", "state", "--jq", ".state"]);
+    if (state !== "MERGED") throw e;
+  }
   if (!pr.deploys) return { merged: true, note: "merged (app doesn't deploy on merge)" };
 
   // 4. The app's checks on the merge commit (its production deploy) all passed.
