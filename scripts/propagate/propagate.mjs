@@ -28,7 +28,7 @@ import {
   compareVersions,
   loadGlobalBundle,
   automergePlan,
-  evaluateChecks,
+  waitForChecks as waitForChecksWith,
   mergeReadiness,
   missingNames,
   patchNpmLock,
@@ -53,7 +53,7 @@ const AUTOMERGE = !flag("no-automerge");
 // under the workflow's timeout-minutes, so a run is never killed halfway through a wait).
 const MIN = 60_000;
 const BUDGET = Number(option("automerge-minutes") ?? 90) * MIN;
-const CHECKS_TIMEOUT = 20 * MIN; // from opening the PR to every check on it finished
+const CHECKS_TIMEOUT = 20 * MIN; // from starting to wait on a PR to every check on it finished
 const FIRST_CHECK = 5 * MIN; // no check by then: the app has none, so don't merge blind
 const MIN_AGE = 3 * MIN; // checks register one by one; don't trust an early "all passed"
 const SETTLE = 1 * MIN; // the same set of checks must stay green this long
@@ -200,7 +200,10 @@ async function mergeOne(pr) {
   const lastMerge = started + BUDGET - DEPLOY_TIMEOUT;
   const outOfTime = "not enough time left in this run to merge and watch the deploy";
   if (Date.now() >= lastMerge) return leftOpen(outOfTime);
-  const checks = await waitForChecks(pr.repo, pr.head, { since: pr.openedAt, until: Math.min(pr.openedAt + CHECKS_TIMEOUT, lastMerge) });
+  // The 20 minutes count from now, not from opening the PR: apps further down the list are
+  // reached only after the earlier ones deployed, and their checks may have been green for ages.
+  const until = Math.min(Date.now() + CHECKS_TIMEOUT, lastMerge);
+  const checks = await waitForChecks(pr.repo, pr.head, { since: pr.openedAt, until });
   if (checks.state === "failure") return leftOpen(`check failed: ${checks.failing.join(", ")}`);
   if (checks.state !== "success" && Date.now() >= lastMerge) return leftOpen(outOfTime);
   if (checks.state === "none") return leftOpen("no checks ran on this PR, so merging it would be blind");
@@ -237,40 +240,13 @@ async function mergeOne(pr) {
   return { merged: true, note: `merged ${mergeSha.slice(0, 7)}; deploy ${problem}`, deployProblem: problem };
 }
 
-/**
- * Polls a commit's checks until they all pass and stay passing for SETTLE, one fails, nothing
- * has reported FIRST_CHECK after `since`, or `until` passes. Returns the last evaluation.
- * A failed API call is retried; three in a row end the wait with that error.
- */
-async function waitForChecks(repo, ref, { since, until }) {
-  let green; // { key, at }: when this exact set of checks was first seen all passing
-  let errors = 0;
-  for (;;) {
-    let checks;
-    try {
-      const statuses = JSON.parse(run("gh", ["api", `repos/${repo}/commits/${ref}/status?per_page=100`])).statuses;
-      const checkRuns = JSON.parse(run("gh", ["api", `repos/${repo}/commits/${ref}/check-runs?per_page=100`])).check_runs;
-      checks = evaluateChecks({ statuses, checkRuns });
-      errors = 0;
-    } catch (e) {
-      if (++errors >= 3) throw e;
-    }
-    const now = Date.now();
-    if (checks) {
-      if (checks.state === "failure") return checks;
-      if (checks.state === "none" && now - since >= FIRST_CHECK) return checks;
-      if (checks.state === "success") {
-        if (green?.key !== checks.key) green = { key: checks.key, at: now };
-        if (now - green.at >= SETTLE && now - since >= Math.min(MIN_AGE, until - since)) return checks;
-      } else green = undefined;
-    }
-    if (now >= until) {
-      if (!checks) return { state: "pending", pending: ["(couldn't read checks)"], failing: [] };
-      // Green but not for long enough yet still counts as waiting, not as passed.
-      return checks.state === "success" ? { ...checks, state: "pending", pending: ["(not settled yet)"] } : checks;
-    }
-    await sleep(Math.min(POLL, Math.max(until - now, 1000)));
-  }
+/** One commit's checks, read through gh (see waitForChecks in lib.mjs). */
+function waitForChecks(repo, ref, { since, until }) {
+  const read = () => ({
+    statuses: JSON.parse(run("gh", ["api", `repos/${repo}/commits/${ref}/status?per_page=100`])).statuses,
+    checkRuns: JSON.parse(run("gh", ["api", `repos/${repo}/commits/${ref}/check-runs?per_page=100`])).check_runs,
+  });
+  return waitForChecksWith({ read, sleep, since, until, timings: { FIRST_CHECK, MIN_AGE, SETTLE, POLL } });
 }
 
 function comment(url, body) {

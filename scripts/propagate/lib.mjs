@@ -60,6 +60,42 @@ export function evaluateChecks({ statuses = [], checkRuns = [] }) {
 }
 
 /**
+ * Polls a commit's checks until they all pass and stay passing for SETTLE, one fails, nothing
+ * has reported FIRST_CHECK after `since`, or `until` passes. Returns the last evaluation.
+ * `read` returns { statuses, checkRuns }; a failed read is retried, three in a row end the wait
+ * with that error. `now` and `sleep` are passed in so tests can run it on a fake clock.
+ */
+export async function waitForChecks({ read, since, until, timings, now: clock = Date.now, sleep }) {
+  const { FIRST_CHECK, MIN_AGE, SETTLE, POLL } = timings;
+  let green; // { key, at }: when this exact set of checks was first seen all passing
+  let errors = 0;
+  for (;;) {
+    let checks;
+    try {
+      checks = evaluateChecks(await read());
+      errors = 0;
+    } catch (e) {
+      if (++errors >= 3) throw e;
+    }
+    const now = clock();
+    if (checks) {
+      if (checks.state === "failure") return checks;
+      if (checks.state === "none" && now - since >= FIRST_CHECK) return checks;
+      if (checks.state === "success") {
+        if (green?.key !== checks.key) green = { key: checks.key, at: now };
+        if (now - green.at >= SETTLE && now - since >= Math.min(MIN_AGE, until - since)) return checks;
+      } else green = undefined;
+    }
+    if (now >= until) {
+      if (!checks) return { state: "pending", pending: ["(couldn't read checks)"], failing: [] };
+      // Green but not for long enough yet still counts as waiting, not as passed.
+      return checks.state === "success" ? { ...checks, state: "pending", pending: ["(not settled yet)"] } : checks;
+    }
+    await sleep(Math.min(POLL, Math.max(until - now, 1000)));
+  }
+}
+
+/**
  * Whether GitHub will take the merge now ("ready"), might soon ("wait": still working out
  * mergeability or settling checks), or won't ("stop", with why). `view` is `gh pr view --json
  * state,isDraft,mergeable,mergeStateStatus,headRefOid`; `head` is the commit propagate pushed.

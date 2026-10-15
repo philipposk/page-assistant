@@ -18,6 +18,7 @@ import {
   patchNpmLock,
   prBody,
   validateApps,
+  waitForChecks,
 } from "./lib.mjs";
 
 const repo = new URL("../../", import.meta.url);
@@ -188,4 +189,35 @@ test("prBody says whether this PR merges itself", () => {
   const base = { app: { name: "x" }, from: "0.8.0", to: "0.8.1", sha: "a".repeat(40), files: [], missing: [] };
   assert.match(prBody({ ...base, plan: { merge: true } }), /merges it itself once every check here passes/);
   assert.match(prBody({ ...base, plan: automergePlan({ app: {}, from: "0.7.4", to: "0.8.1" }) }), /Nothing here is merged automatically \(minor\/major/);
+});
+
+test("waitForChecks: the timeout runs from when the wait starts, not from opening the PR", async () => {
+  const MIN = 60_000;
+  const timings = { FIRST_CHECK: 5 * MIN, MIN_AGE: 3 * MIN, SETTLE: 1 * MIN, POLL: 30_000 };
+  const green = { statuses: [{ context: "Vercel", state: "success" }], checkRuns: [] };
+  // A fake clock: sleeping just moves it on.
+  const fake = (start) => {
+    let t = start;
+    return { now: () => t, sleep: async (ms) => void (t += ms) };
+  };
+
+  // App 6 of a release: its PR opened 25 min ago and has been green ever since.
+  const openedAt = 0;
+  const late = fake(25 * MIN);
+  const result = await waitForChecks({ read: () => green, since: openedAt, until: late.now() + 20 * MIN, timings, ...late });
+  assert.equal(result.state, "success");
+  assert.ok(late.now() - 25 * MIN >= timings.SETTLE && late.now() - 25 * MIN < 2 * MIN);
+
+  // Measured from opening the PR instead, the same green checks never get to settle.
+  const old = fake(25 * MIN);
+  const stale = await waitForChecks({ read: () => green, since: openedAt, until: openedAt + 20 * MIN, timings, ...old });
+  assert.equal(stale.state, "pending");
+  assert.deepEqual(stale.pending, ["(not settled yet)"]);
+
+  // A failure still ends the wait at once, and no checks at all is "none" after FIRST_CHECK.
+  const failed = { statuses: [{ context: "Vercel", state: "failure" }], checkRuns: [] };
+  assert.equal((await waitForChecks({ read: () => failed, since: 0, until: 20 * MIN, timings, ...fake(0) })).state, "failure");
+  const none = fake(0);
+  assert.equal((await waitForChecks({ read: () => ({}), since: 0, until: 20 * MIN, timings, ...none })).state, "none");
+  assert.ok(none.now() >= timings.FIRST_CHECK && none.now() < 20 * MIN);
 });
