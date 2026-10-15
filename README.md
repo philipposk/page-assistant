@@ -170,6 +170,10 @@ session.)
 - **Best quality:** built-in settings (gear icon) or `PageAssistant.mountVoiceSettingsPanel()` — pick ElevenLabs / OpenAI voices, browser vs server TTS/STT. Stored in `localStorage` (`page_assistant_voice_settings` by default).
 - **Host override:** `onSettings` replaces the built-in modal; `settingsPageUrl` adds a link to your app settings page.
 - **Barge-in:** talking over the assistant stops it instantly.
+- **iPhone read-aloud:** iOS only lets a page start audio inside a tap, and a reply arrives
+  seconds after one. The widget unlocks speech on the tap that asks (send, mic, the
+  read-aloud button) and plays every reply through that one unlocked element; if the phone
+  still refuses, the reply is read with the browser's own voice rather than not at all.
 - **No silent mic:** if the browser has no `SpeechRecognition` and there is no `serverUrl`
   to send recorded audio to, the mic button renders visibly disabled with an explanation
   rather than doing nothing when tapped. Every other failure — refused permission, no

@@ -272,12 +272,29 @@ import { mountVoiceSettingsPanel } from "@page-assistant/widget";
 mountVoiceSettingsPanel(document.getElementById("pa-voice-settings")!);
 ```
 
+**A bottom tab bar or other fixed footer.** The launcher sits in the bottom-right corner,
+which on phones is usually where a tab bar's last tab is. Set `--pa-offset-bottom` to the
+bar's height and the launcher, the panel and its notifications move up by that much (the
+panel gets shorter to match). Custom properties inherit into the widget's shadow root, so
+set it anywhere above `<body>` — only while the bar is on screen:
+
+```css
+@media (max-width: 820px) {
+  body:has(.tab-bar) { --pa-offset-bottom: 56px; }
+}
+```
+
+While the on-screen keyboard is up the bar is behind it, so the panel ignores the offset
+then and sits just above the keyboard, never taller than what the keyboard leaves visible.
+
 ## 5. Voice (built-in)
 
 - Default: **text only** (free)
 - Gear icon → voice picker (ElevenLabs / OpenAI / browser)
 - Mic: browser (free) or server Whisper
 - No custom UI needed unless you override `onSettings`
+- Read-aloud works on iPhones with server voices too: no `voiceDefaults: { ttsMode: "browser" }`
+  workaround is needed for iOS since 0.8.0
 
 ## 6. Agent discovery (llm.txt) — the second capability list
 
