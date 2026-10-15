@@ -1,13 +1,29 @@
 name: Propagate
 
 # Opens a PR in every app listed in scripts/propagate/apps.json whenever a version bump lands on
-# main, moving that app to the new version. Nothing is merged: each app's own checks and preview
-# run on its PR, and a person merges it.
+# main, moving that app to the new version.
+#
+# Patch releases for an app (0.8.0 -> 0.8.1, judged from the version that app is on) merge
+# themselves: propagate.mjs waits until every check on the PR has passed, merges it (merge
+# commit), then waits for that app's deploy of the merge commit to report success before it
+# merges the next one. One deploy at a time. Minor and major releases only get a PR. GitHub's own
+# auto-merge needs branch protection, which the private app repos don't have on the free plan,
+# so the waiting happens in this job. Anything unexpected leaves the PR open with a comment; the
+# run summary lists each app as merged or left open, and why.
+# Turn auto-merge off: per app with "automerge": false in apps.json, per run with the
+# automerge input below, or for every run with the repo variable PROPAGATE_AUTOMERGE=off.
 #
 # Needs the repo secret APPS_PR_TOKEN: a fine-grained GitHub token for philipposk with
-# "Contents: read and write" and "Pull requests: read and write" on every app repo in apps.json.
+# "Contents: read and write", "Pull requests: read and write", "Commit statuses: read" and
+# "Checks: read" on every app repo in apps.json. Without the two reads nothing auto-merges (the
+# PRs stay open and say why).
 #
-# Run it by hand from the Actions tab to retry, pick some apps, or dry-run (nothing pushed).
+# Run time: the merges and deploy waits are sequential, so a run can take up to ~90 minutes
+# (timeout-minutes below). This repo is public, so GitHub-hosted runner minutes are free here and
+# don't count against the free plan's 2,000 private-repo minutes; the waiting costs nothing.
+#
+# Run it by hand from the Actions tab to retry, pick some apps, or dry-run (nothing pushed or
+# merged).
 on:
   push:
     branches: [main]
@@ -22,6 +38,10 @@ on:
         description: "Dry run: build and check, push nothing"
         type: boolean
         default: true
+      automerge:
+        description: "Merge patch releases once their checks pass (off = PRs only)"
+        type: boolean
+        default: true
 
 concurrency:
   group: propagate
@@ -30,6 +50,9 @@ concurrency:
 jobs:
   propagate:
     runs-on: ubuntu-latest
+    # Sequential merges, each waiting for its app's deploy. propagate.mjs stops merging after
+    # 90 minutes (--automerge-minutes), so the job ends cleanly with its summary inside this.
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
@@ -68,16 +91,18 @@ jobs:
       - if: steps.version.outputs.go == 'true'
         run: node --test packages/server/test/*.test.mjs
 
-      - name: Open PRs in the apps
+      - name: Open PRs in the apps, merge patch releases one by one
         if: steps.version.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.APPS_PR_TOKEN }}
           APPS: ${{ inputs.apps }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          NO_AUTOMERGE: ${{ (github.event_name == 'workflow_dispatch' && !inputs.automerge) || vars.PROPAGATE_AUTOMERGE == 'off' }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::The APPS_PR_TOKEN secret is missing, so no app was updated. See the comment at the top of propagate.yml."
             exit 1
           fi
           gh auth setup-git
-          node scripts/propagate/propagate.mjs --apps "$APPS" $([ "$DRY_RUN" = "true" ] && echo --dry-run)
+          node scripts/propagate/propagate.mjs --apps "$APPS" --automerge-minutes 90 \
+            $([ "$DRY_RUN" = "true" ] && echo --dry-run) $([ "$NO_AUTOMERGE" = "true" ] && echo --no-automerge)

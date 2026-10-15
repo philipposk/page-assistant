@@ -13,6 +13,68 @@ export function compareVersions(a, b) {
   return 0;
 }
 
+/**
+ * True when `to` is a patch release for an app on `from`: same major and minor, higher patch
+ * (0.8.0 → 0.8.1). An app on 0.7.x getting 0.8.1 is not, whatever the release itself is.
+ */
+export function isPatchBump(from, to) {
+  const parse = (v) => (/^\d+\.\d+\.\d+$/.test(v ?? "") ? v.split(".").map(Number) : null);
+  const a = parse(from);
+  const b = parse(to);
+  return Boolean(a && b && a[0] === b[0] && a[1] === b[1] && b[2] > a[2]);
+}
+
+/**
+ * Whether propagate should merge this app's PR itself once its checks pass, and why (not).
+ * Only patch releases for that app merge themselves; minor and major ones wait for a person.
+ */
+export function automergePlan({ app, from, to, missing = [], enabled = true }) {
+  if (!enabled) return { merge: false, reason: "PR only (auto-merge off for this run)" };
+  if (app.automerge === false) return { merge: false, reason: "PR only (auto-merge off for this app in apps.json)" };
+  if (missing.length) return { merge: false, reason: "PR only (draft: names missing)" };
+  if (!from) return { merge: false, reason: "PR only (app's current version unknown)" };
+  if (!isPatchBump(from, to)) return { merge: false, reason: `PR only (minor/major for this app: ${from} → ${to})` };
+  return { merge: true, reason: `patch for this app: ${from} → ${to}` };
+}
+
+// Check-run conclusions that don't block a merge. Anything else that finished is a failure.
+const PASSING = new Set(["success", "neutral", "skipped"]);
+
+/**
+ * Sums up a commit's checks: its commit statuses (Vercel, CodeRabbit) and check runs (Actions).
+ * state is "none" (nothing reported yet), "pending", "failure" or "success". `key` names every
+ * check, so a caller can tell a new check turning up from the same set still passing.
+ */
+export function evaluateChecks({ statuses = [], checkRuns = [] }) {
+  const all = [
+    ...statuses.map((s) => ({ name: s.context, state: s.state === "success" ? "ok" : s.state === "pending" ? "pending" : "fail" })),
+    ...checkRuns.map((r) => ({
+      name: r.name,
+      state: r.status !== "completed" ? "pending" : PASSING.has(r.conclusion) ? "ok" : "fail",
+    })),
+  ];
+  const failing = all.filter((c) => c.state === "fail").map((c) => c.name);
+  const pending = all.filter((c) => c.state === "pending").map((c) => c.name);
+  const state = !all.length ? "none" : failing.length ? "failure" : pending.length ? "pending" : "success";
+  return { state, total: all.length, failing, pending, key: all.map((c) => c.name).sort().join(",") };
+}
+
+/**
+ * Whether GitHub will take the merge now ("ready"), might soon ("wait": still working out
+ * mergeability or settling checks), or won't ("stop", with why). `view` is `gh pr view --json
+ * state,isDraft,mergeable,mergeStateStatus,headRefOid`; `head` is the commit propagate pushed.
+ */
+export function mergeReadiness(view, head) {
+  if (view.state !== "OPEN") return { verdict: "stop", reason: `PR is ${String(view.state).toLowerCase()}` };
+  if (view.isDraft) return { verdict: "stop", reason: "PR is a draft" };
+  if (head && view.headRefOid !== head) return { verdict: "stop", reason: "PR has commits propagate didn't push" };
+  if (view.mergeable === "CONFLICTING" || view.mergeStateStatus === "DIRTY") return { verdict: "stop", reason: "merge conflict" };
+  if (view.mergeable === "UNKNOWN" || view.mergeStateStatus === "UNKNOWN") return { verdict: "wait" };
+  if (["CLEAN", "HAS_HOOKS"].includes(view.mergeStateStatus)) return { verdict: "ready" };
+  if (view.mergeStateStatus === "UNSTABLE") return { verdict: "wait" };
+  return { verdict: "stop", reason: `GitHub says the PR can't merge yet (${view.mergeStateStatus})` };
+}
+
 /** Everything wrong with the app list, as readable lines. Empty when it is usable. */
 export function validateApps(apps) {
   const errors = [];
@@ -34,6 +96,7 @@ export function validateApps(apps) {
         }
       }
     }
+    if (app?.automerge !== undefined && typeof app.automerge !== "boolean") errors.push(`${at}: automerge must be true or false`);
     if (app?.kind === "submodule" && !app.submodule?.path) errors.push(`${at}: submodule.path is required`);
     if (app?.kind === "pin" && !(app.pins ?? []).some((p) => p.value === "sha")) {
       errors.push(`${at}: a "pin" app needs a pin with value "sha"`);
@@ -141,12 +204,14 @@ export function missingNames(uses, { globals, exports }) {
 
 const BODY_LIMIT = 60_000;
 
-export function prBody({ app, from, to, sha, files, missing, changelog }) {
+export function prBody({ app, from, to, sha, files, missing, changelog, plan }) {
   const short = sha.slice(0, 7);
   const lines = [
     `Moves page-assistant from **${from ?? "an unknown version"}** to **${to}** ([\`${short}\`](https://github.com/philipposk/page-assistant/commit/${sha})).`,
     "",
-    `Opened by page-assistant's propagate workflow. Nothing here is merged automatically; ${app.deploysOnMerge === false ? "merging does not deploy by itself" : "merging this deploys it"}.`,
+    plan?.merge
+      ? `Opened by page-assistant's propagate workflow. This is a patch release for this app, so propagate merges it itself once every check here passes, then waits for the deploy before touching the next app. If anything looks off it leaves the PR open and comments why.`
+      : `Opened by page-assistant's propagate workflow. Nothing here is merged automatically${plan?.reason ? ` (${plan.reason.replace(/^PR only \((.*)\)$/, "$1")})` : ""}; ${app.deploysOnMerge === false ? "merging does not deploy by itself" : "merging this deploys it"}.`,
     "",
     "**Changed:**",
     ...files.map((f) => `- \`${f}\``),
