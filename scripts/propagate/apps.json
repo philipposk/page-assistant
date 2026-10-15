@@ -37,10 +37,10 @@
     },
     {
       "name": "nowish",
-      "repo": "philipposk/nowish",
+      "repo": "philipposk/eventnow",
       "kind": "bundle",
       "bundle": {
-        "to": "public/vendor/page-assistant.js",
+        "to": "public/vendor/page-assistant.global.js",
         "versionFile": "public/vendor/page-assistant.version"
       },
       "uses": {}
