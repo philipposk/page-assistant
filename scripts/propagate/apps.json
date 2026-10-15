@@ -1,5 +1,5 @@
 {
-  "$comment": "Apps that embed page-assistant and how each is moved to a new version. kind: bundle = the script-tag bundle copied into the app; dir = built packages copied into the app; submodule = git submodule + file: deps; pin = the app clones the SDK at install time at a commit pinned in a script. uses = the names the app's code calls, checked against each release. Left out on purpose: Translator (own copy of an old version; move it to a submodule first), AI OS and AI-OS (still on ~0.2; AI-OS's Python backend speaks the widget's LLM protocol, so a jump needs a person).",
+  "$comment": "Apps that embed page-assistant and how each is moved to a new version. kind: bundle = the script-tag bundle copied into the app; dir = built packages copied into the app; submodule = git submodule + file: deps; pin = the app clones the SDK at install time at a commit pinned in a script. uses = the names the app's code calls, checked against each release. automerge: false = never merge this app's PR by itself, even for a patch release. Left out on purpose: Translator (own copy of an old version; move it to a submodule first), AI OS and AI-OS (still on ~0.2; AI-OS's Python backend speaks the widget's LLM protocol, so a jump needs a person).",
   "apps": [
     {
       "name": "samos-companion",

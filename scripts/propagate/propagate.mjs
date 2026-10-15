@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 // Opens a pull request in every app that embeds page-assistant, moving it to this checkout's
 // version. Run by .github/workflows/propagate.yml when a version bump lands on main; run it by
-// hand with --dry-run to see what each app would get without pushing anything.
+// hand with --dry-run to see what each app would get without pushing or merging anything.
 //
 //   node scripts/propagate/propagate.mjs [--apps samos-companion,topia] [--dry-run] [--keep]
+//                                        [--no-automerge] [--automerge-minutes 90]
 //
 // Needs a built checkout (`npm run build`), `git`, and `gh` signed in with a token that can push
-// branches and open PRs in the app repos. The apps and how each embeds the SDK are listed in
-// scripts/propagate/apps.json. Nothing is ever merged: each app's own checks and preview run on
-// the PR, and a person merges it.
+// branches, open and merge PRs, and read checks in the app repos. The apps and how each embeds
+// the SDK are listed in scripts/propagate/apps.json.
+//
+// Patch releases merge themselves. When the new version is a patch for an app (0.8.0 → 0.8.1,
+// judged from the version that app is on now), propagate merges that app's PR once every check
+// on it has passed, then waits for the app's deploy of the merge commit to report success before
+// it touches the next app: one deploy at a time, never a burst. Minor and major releases (and
+// apps with "automerge": false) only get a PR, and a person merges it. GitHub's own auto-merge
+// needs branch protection, which private repos on the free plan don't have, so the waiting is
+// done here. Anything unexpected leaves the PR open with a comment saying why.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +27,9 @@ import {
   changelogBetween,
   compareVersions,
   loadGlobalBundle,
+  automergePlan,
+  waitForChecks as waitForChecksWith,
+  mergeReadiness,
   missingNames,
   patchNpmLock,
   prBody,
@@ -36,6 +47,19 @@ const option = (name) => {
 const DRY = flag("dry-run");
 const KEEP = flag("keep");
 const only = (option("apps") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const AUTOMERGE = !flag("no-automerge");
+
+// How long auto-merge waits. The run as a whole stops merging after --automerge-minutes (keep it
+// under the workflow's timeout-minutes, so a run is never killed halfway through a wait).
+const MIN = 60_000;
+const BUDGET = Number(option("automerge-minutes") ?? 90) * MIN;
+const CHECKS_TIMEOUT = 20 * MIN; // from starting to wait on a PR to every check on it finished
+const FIRST_CHECK = 5 * MIN; // no check by then: the app has none, so don't merge blind
+const MIN_AGE = 3 * MIN; // checks register one by one; don't trust an early "all passed"
+const SETTLE = 1 * MIN; // the same set of checks must stay green this long
+const DEPLOY_TIMEOUT = 15 * MIN; // from merging to the deploy of the merge commit reporting back
+const POLL = 30_000;
+const started = Date.now();
 
 const run = (cmd, argv, opts = {}) =>
   execFileSync(cmd, argv, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts }).trim();
@@ -75,8 +99,9 @@ for (const app of apps.filter((a) => !only.length || only.includes(a.name))) {
   }
 }
 if (!KEEP) rmSync(work, { recursive: true, force: true });
+if (!DRY) await autoMerge(results);
 report(results);
-process.exit(results.some((r) => r.outcome === "failed") ? 1 : 0);
+process.exit(results.some((r) => r.outcome === "failed" || r.deployFailed) ? 1 : 0);
 
 async function propagate(app) {
   const dir = join(work, app.name);
@@ -104,11 +129,13 @@ async function propagate(app) {
   if (!files.length) return { outcome: "up to date", detail: "no file changes" };
   const missing = missingNames(app.uses, { globals, exports });
   const title = `Update page-assistant to ${version}`;
-  const body = prBody({ app, from: from.version, to: version, sha, files, missing, changelog: changelogBetween(changelog, from.version, version) });
+  const plan = automergePlan({ app, from: from.version, to: version, missing, enabled: AUTOMERGE });
+  const body = prBody({ app, from: from.version, to: version, sha, files, missing, plan, changelog: changelogBetween(changelog, from.version, version) });
 
   if (DRY) {
     return {
       outcome: "would open PR",
+      merge: plan.merge ? `would auto-merge once checks pass (${plan.reason})` : plan.reason,
       detail: `${from.version ?? from.sha?.slice(0, 7) ?? "?"} → ${version}; ${files.length} file(s)${missing.length ? `; MISSING ${missing.join(", ")}` : ""}${KEEP ? `; clone at ${dir}` : ""}`,
     };
   }
@@ -118,10 +145,134 @@ async function propagate(app) {
   git(dir, "-c", `user.name=${me.name || me.login}`, "-c", `user.email=${me.id}+${me.login}@users.noreply.github.com`,
     "commit", "-q", "-m", `${title}\n\nFrom philipposk/page-assistant@${sha.slice(0, 7)}.`);
   git(dir, "push", "-q", "origin", branch);
+  const head = git(dir, "rev-parse", "HEAD");
   const url = run("gh", ["pr", "create", "--repo", app.repo, "--base", base, "--head", branch, "--title", title,
     "--body", body, ...(missing.length ? ["--draft"] : [])]);
-  return { outcome: missing.length ? "draft PR (names missing)" : "PR opened", detail: url };
+  return {
+    outcome: missing.length ? "draft PR (names missing)" : "PR opened",
+    detail: url,
+    merge: plan.merge ? "waiting" : plan.reason,
+    pr: plan.merge ? { url, head, openedAt: Date.now(), repo: app.repo, deploys: app.deploysOnMerge !== false } : undefined,
+  };
 }
+
+// --- auto-merge, one app at a time ---------------------------------------------------------
+
+/**
+ * Merges the PRs that are patch releases for their app, in apps.json order. Their checks have
+ * been running since the PRs were opened above; each merge waits for the one before it to
+ * deploy. Once a deploy doesn't confirm, the rest are left open: something is wrong, and a
+ * person should look before more apps change.
+ */
+async function autoMerge(rows) {
+  let halted;
+  for (const r of rows.filter((x) => x.pr)) {
+    let outcome;
+    if (halted) outcome = { reason: halted };
+    else {
+      try {
+        outcome = await mergeOne(r.pr);
+      } catch (e) {
+        outcome = { reason: `GitHub API error: ${errorText(e)}` };
+      }
+    }
+    if (outcome.merged) {
+      r.merge = outcome.note;
+      if (outcome.deployProblem) {
+        r.deployFailed = true;
+        halted = `${r.app}'s deploy didn't confirm earlier in this run, so auto-merge stopped`;
+        comment(r.pr.url, `Merged by propagate (patch release), but the deploy of the merge commit didn't confirm: ${outcome.deployProblem}. Check the app. Propagate stopped auto-merging the remaining apps in this run.`);
+      }
+    } else {
+      r.merge = `left open: ${outcome.reason}`;
+      comment(r.pr.url, `Not auto-merged: ${outcome.reason}. Propagate merges a patch release by itself only when every check on the PR has passed and the previous app deployed fine; merge this by hand once you're happy with it.`);
+    }
+    console.log(`${r.app}: ${r.merge}`);
+  }
+}
+
+/** Waits for one PR's checks, merges it, and waits for the deploy. Never throws for a "no". */
+async function mergeOne(pr) {
+  const leftOpen = (reason) => ({ reason });
+
+  // 1. Every check on the PR's head commit passed, and stayed that way for a minute.
+  // The run must still have time to watch the deploy after merging.
+  const lastMerge = started + BUDGET - DEPLOY_TIMEOUT;
+  const outOfTime = "not enough time left in this run to merge and watch the deploy";
+  if (Date.now() >= lastMerge) return leftOpen(outOfTime);
+  // The 20 minutes count from now, not from opening the PR: apps further down the list are
+  // reached only after the earlier ones deployed, and their checks may have been green for ages.
+  const until = Math.min(Date.now() + CHECKS_TIMEOUT, lastMerge);
+  const checks = await waitForChecks(pr.repo, pr.head, { since: pr.openedAt, until });
+  if (checks.state === "failure") return leftOpen(`check failed: ${checks.failing.join(", ")}`);
+  if (checks.state !== "success" && Date.now() >= lastMerge) return leftOpen(outOfTime);
+  if (checks.state === "none") return leftOpen("no checks ran on this PR, so merging it would be blind");
+  if (checks.state !== "success") return leftOpen(`checks still pending after ${CHECKS_TIMEOUT / MIN} min: ${checks.pending.join(", ")}`);
+
+  // 2. GitHub agrees it can merge, and nobody pushed to the branch since propagate did.
+  let ready;
+  for (let i = 0; i < 8; i++) {
+    const view = JSON.parse(run("gh", ["pr", "view", pr.url, "--json", "state,isDraft,mergeable,mergeStateStatus,headRefOid"]));
+    ready = mergeReadiness(view, pr.head);
+    if (ready.verdict !== "wait") break;
+    await sleep(15_000);
+  }
+  if (ready.verdict !== "ready") return leftOpen(ready.reason ?? "GitHub is still working out whether it can merge");
+
+  // 3. Merge (a merge commit; the branch stays) and find the commit it made. gh can fail after
+  // GitHub already merged (a dropped connection): then it counts as merged and the deploy is still
+  // watched, so the next app never deploys on top of this one.
+  try {
+    run("gh", ["pr", "merge", pr.url, "--merge", "--match-head-commit", pr.head]);
+  } catch (e) {
+    const state = run("gh", ["pr", "view", pr.url, "--json", "state", "--jq", ".state"]);
+    if (state !== "MERGED") throw e;
+  }
+  if (!pr.deploys) return { merged: true, note: "merged (app doesn't deploy on merge)" };
+
+  // 4. The app's checks on the merge commit (its production deploy) all passed.
+  let mergeSha = "";
+  let deploy;
+  try {
+    mergeSha = run("gh", ["pr", "view", pr.url, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
+    deploy = await waitForChecks(pr.repo, mergeSha, { since: Date.now(), until: Date.now() + DEPLOY_TIMEOUT });
+  } catch (e) {
+    return { merged: true, note: `merged ${mergeSha.slice(0, 7)}; deploy unknown`, deployProblem: `couldn't read its status (${errorText(e)})` };
+  }
+  if (deploy.state === "success") return { merged: true, note: `merged ${mergeSha.slice(0, 7)}, deploy ok` };
+  const problem =
+    deploy.state === "none" ? "nothing reported a deploy for it"
+    : deploy.state === "failure" ? `failed: ${deploy.failing.join(", ")}`
+    : `still pending after ${DEPLOY_TIMEOUT / MIN} min: ${deploy.pending.join(", ")}`;
+  return { merged: true, note: `merged ${mergeSha.slice(0, 7)}; deploy ${problem}`, deployProblem: problem };
+}
+
+/** One commit's checks, read through gh (see waitForChecks in lib.mjs). */
+function waitForChecks(repo, ref, { since, until }) {
+  const read = () => ({
+    statuses: JSON.parse(run("gh", ["api", `repos/${repo}/commits/${ref}/status?per_page=100`])).statuses,
+    checkRuns: JSON.parse(run("gh", ["api", `repos/${repo}/commits/${ref}/check-runs?per_page=100`])).check_runs,
+  });
+  return waitForChecksWith({ read, sleep, since, until, timings: { FIRST_CHECK, MIN_AGE, SETTLE, POLL } });
+}
+
+function comment(url, body) {
+  try {
+    run("gh", ["pr", "comment", url, "--body", body]);
+  } catch (e) {
+    console.error(`could not comment on ${url}: ${errorText(e)}`);
+  }
+}
+
+function errorText(e) {
+  const text = (e.stderr?.toString().trim() || e.message).split("\n")[0];
+  // A fine-grained token without these reads gets a 403 on statuses and check runs.
+  return /403|Resource not accessible/i.test(text)
+    ? `${text} (APPS_PR_TOKEN needs Checks: read and Commit statuses: read on this repo)`
+    : text;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The SDK version (and for submodules the commit) the app is on now. */
 function currentVersion(dir, app) {
@@ -195,11 +346,14 @@ async function exportNames(rel) {
 
 function report(rows) {
   const width = Math.max(...rows.map((r) => r.app.length), 3);
-  const text = rows.map((r) => `${r.app.padEnd(width)}  ${r.outcome}${r.detail ? `: ${r.detail}` : ""}`).join("\n");
-  console.log(`page-assistant ${version} (${sha.slice(0, 7)})${DRY ? " — dry run, nothing pushed" : ""}\n${text}`);
+  const text = rows
+    .map((r) => `${r.app.padEnd(width)}  ${r.outcome}${r.detail ? `: ${r.detail}` : ""}${r.merge ? `\n${" ".repeat(width)}  → ${r.merge}` : ""}`)
+    .join("\n");
+  console.log(`page-assistant ${version} (${sha.slice(0, 7)})${DRY ? " — dry run, nothing pushed or merged" : ""}${AUTOMERGE ? "" : " — auto-merge off"}\n${text}`);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    const md = [`### page-assistant ${version}${DRY ? " (dry run)" : ""}`, "", "| App | Outcome | Detail |", "|---|---|---|",
-      ...rows.map((r) => `| ${r.app} | ${r.outcome} | ${(r.detail ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ")} |`)];
+    const cell = (s) => (s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+    const md = [`### page-assistant ${version}${DRY ? " (dry run)" : ""}`, "", "| App | Outcome | Auto-merge | Detail |", "|---|---|---|---|",
+      ...rows.map((r) => `| ${r.app} | ${r.outcome} | ${cell(r.merge ?? "—")} | ${cell(r.detail)} |`)];
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
   }
 }

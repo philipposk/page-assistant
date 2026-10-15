@@ -1,18 +1,24 @@
 // The propagate workflow's decisions, without git, gh or a network: the app list is valid, each
 // app's pins still match its real files' shape, locks and pins change only what they should, and
-// a name an app uses that a release drops is caught.
+// a name an app uses that a release drops is caught; only a patch release for an app, with every
+// check passed, is merged without a person.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   applyPin,
+  automergePlan,
   changelogBetween,
   compareVersions,
+  evaluateChecks,
+  isPatchBump,
   loadGlobalBundle,
+  mergeReadiness,
   missingNames,
   patchNpmLock,
   prBody,
   validateApps,
+  waitForChecks,
 } from "./lib.mjs";
 
 const repo = new URL("../../", import.meta.url);
@@ -28,7 +34,9 @@ test("validateApps names what is wrong", () => {
     { name: "a", repo: "nope", kind: "bundle" },
     { name: "a", repo: "o/r", kind: "dir", copy: [{ from: "x" }] },
     { name: "b", repo: "o/r", kind: "submodule", submodule: { path: "v" }, pins: [{ file: "f", pattern: "PIN = x", value: "sha" }] },
+    { name: "c", repo: "o/r", kind: "bundle", bundle: { to: "x.js" }, automerge: "no" },
   ]);
+  assert.ok(errors.some((e) => e.includes("automerge must be true or false")));
   assert.ok(errors.some((e) => e.includes("repo must be owner/name")));
   assert.ok(errors.some((e) => e.includes("bundle.to is required")));
   assert.ok(errors.some((e) => e.includes("duplicate name")));
@@ -118,4 +126,98 @@ test("prBody says what moved, flags missing names, and stays under GitHub's limi
   assert.match(body, /no longer has/);
   assert.match(body, /After deploy:\*\* open the assistant/);
   assert.ok(body.length < 65_536);
+});
+
+test("isPatchBump: same major and minor, higher patch, for the version this app is on", () => {
+  assert.equal(isPatchBump("0.8.0", "0.8.1"), true);
+  assert.equal(isPatchBump("1.2.3", "1.2.10"), true);
+  assert.equal(isPatchBump("0.8.1", "0.8.1"), false, "same version");
+  assert.equal(isPatchBump("0.8.2", "0.8.1"), false, "downgrade");
+  assert.equal(isPatchBump("0.7.4", "0.8.1"), false, "an app on 0.7.x getting 0.8.1 is a minor jump for it");
+  assert.equal(isPatchBump("0.8.0", "0.9.0"), false);
+  assert.equal(isPatchBump("0.8.0", "1.0.0"), false);
+  assert.equal(isPatchBump("1.8.0", "2.8.1"), false);
+  assert.equal(isPatchBump(undefined, "0.8.1"), false, "unknown current version");
+  assert.equal(isPatchBump("0.8.0-beta.1", "0.8.1"), false);
+});
+
+test("automergePlan merges only patches, and honours both opt-outs and missing names", () => {
+  const app = { name: "x" };
+  assert.equal(automergePlan({ app, from: "0.8.0", to: "0.8.1" }).merge, true);
+  assert.match(automergePlan({ app, from: "0.7.4", to: "0.8.1" }).reason, /minor\/major for this app: 0\.7\.4 → 0\.8\.1/);
+  assert.match(automergePlan({ app, from: undefined, to: "0.8.1" }).reason, /unknown/);
+  assert.match(automergePlan({ app: { automerge: false }, from: "0.8.0", to: "0.8.1" }).reason, /apps\.json/);
+  assert.match(automergePlan({ app, from: "0.8.0", to: "0.8.1", enabled: false }).reason, /off for this run/);
+  assert.match(automergePlan({ app, from: "0.8.0", to: "0.8.1", missing: ["window.PageAssistant.gone"] }).reason, /draft/);
+});
+
+test("evaluateChecks: nothing yet, pending, failed, passed", () => {
+  const vercel = (state) => ({ context: "Vercel", state });
+  const run = (status, conclusion = null) => ({ name: "test", status, conclusion });
+  assert.equal(evaluateChecks({}).state, "none");
+  assert.equal(evaluateChecks({ statuses: [vercel("pending")] }).state, "pending");
+  assert.equal(evaluateChecks({ statuses: [vercel("success")], checkRuns: [run("in_progress")] }).state, "pending");
+  const failed = evaluateChecks({ statuses: [vercel("success"), { context: "CodeRabbit", state: "error" }], checkRuns: [run("in_progress")] });
+  assert.equal(failed.state, "failure", "one failure is enough, even with others still running");
+  assert.deepEqual(failed.failing, ["CodeRabbit"]);
+  for (const bad of ["failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"]) {
+    assert.equal(evaluateChecks({ checkRuns: [run("completed", bad)] }).state, "failure", bad);
+  }
+  const ok = evaluateChecks({
+    statuses: [vercel("success")],
+    checkRuns: [run("completed", "success"), { name: "lint", status: "completed", conclusion: "skipped" }, { name: "x", status: "completed", conclusion: "neutral" }],
+  });
+  assert.equal(ok.state, "success");
+  assert.equal(ok.total, 4);
+  assert.equal(ok.key, "Vercel,lint,test,x");
+});
+
+test("mergeReadiness: merges a clean PR with propagate's own head, waits while GitHub works it out", () => {
+  const view = { state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: "abc" };
+  assert.equal(mergeReadiness(view, "abc").verdict, "ready");
+  assert.equal(mergeReadiness({ ...view, mergeStateStatus: "HAS_HOOKS" }, "abc").verdict, "ready");
+  assert.equal(mergeReadiness({ ...view, mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }, "abc").verdict, "wait");
+  assert.equal(mergeReadiness({ ...view, mergeStateStatus: "UNSTABLE" }, "abc").verdict, "wait");
+  assert.match(mergeReadiness({ ...view, headRefOid: "def" }, "abc").reason, /didn't push/);
+  assert.match(mergeReadiness({ ...view, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, "abc").reason, /conflict/);
+  assert.match(mergeReadiness({ ...view, isDraft: true }, "abc").reason, /draft/);
+  assert.match(mergeReadiness({ ...view, state: "MERGED" }, "abc").reason, /merged/);
+  assert.match(mergeReadiness({ ...view, mergeStateStatus: "BLOCKED" }, "abc").reason, /BLOCKED/);
+});
+
+test("prBody says whether this PR merges itself", () => {
+  const base = { app: { name: "x" }, from: "0.8.0", to: "0.8.1", sha: "a".repeat(40), files: [], missing: [] };
+  assert.match(prBody({ ...base, plan: { merge: true } }), /merges it itself once every check here passes/);
+  assert.match(prBody({ ...base, plan: automergePlan({ app: {}, from: "0.7.4", to: "0.8.1" }) }), /Nothing here is merged automatically \(minor\/major/);
+});
+
+test("waitForChecks: the timeout runs from when the wait starts, not from opening the PR", async () => {
+  const MIN = 60_000;
+  const timings = { FIRST_CHECK: 5 * MIN, MIN_AGE: 3 * MIN, SETTLE: 1 * MIN, POLL: 30_000 };
+  const green = { statuses: [{ context: "Vercel", state: "success" }], checkRuns: [] };
+  // A fake clock: sleeping just moves it on.
+  const fake = (start) => {
+    let t = start;
+    return { now: () => t, sleep: async (ms) => void (t += ms) };
+  };
+
+  // App 6 of a release: its PR opened 25 min ago and has been green ever since.
+  const openedAt = 0;
+  const late = fake(25 * MIN);
+  const result = await waitForChecks({ read: () => green, since: openedAt, until: late.now() + 20 * MIN, timings, ...late });
+  assert.equal(result.state, "success");
+  assert.ok(late.now() - 25 * MIN >= timings.SETTLE && late.now() - 25 * MIN < 2 * MIN);
+
+  // Measured from opening the PR instead, the same green checks never get to settle.
+  const old = fake(25 * MIN);
+  const stale = await waitForChecks({ read: () => green, since: openedAt, until: openedAt + 20 * MIN, timings, ...old });
+  assert.equal(stale.state, "pending");
+  assert.deepEqual(stale.pending, ["(not settled yet)"]);
+
+  // A failure still ends the wait at once, and no checks at all is "none" after FIRST_CHECK.
+  const failed = { statuses: [{ context: "Vercel", state: "failure" }], checkRuns: [] };
+  assert.equal((await waitForChecks({ read: () => failed, since: 0, until: 20 * MIN, timings, ...fake(0) })).state, "failure");
+  const none = fake(0);
+  assert.equal((await waitForChecks({ read: () => ({}), since: 0, until: 20 * MIN, timings, ...none })).state, "none");
+  assert.ok(none.now() >= timings.FIRST_CHECK && none.now() < 20 * MIN);
 });

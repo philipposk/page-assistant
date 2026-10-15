@@ -394,13 +394,25 @@ tests this repo, then opens one PR in each app listed in
 version the way it embeds the SDK: copying the script-tag bundle, copying the built packages,
 moving a submodule, or moving a pinned commit, with lockfile versions and pins updated to match.
 Before opening a PR it checks that every name the app uses (its `uses` list) still exists in
-the new version; if one is gone the PR opens as a draft and names it. Nothing is merged: each
-app's own checks and preview run on the PR.
+the new version; if one is gone the PR opens as a draft and names it.
+
+**Patch releases merge themselves; minor and major ones wait for a person.** When the new
+version is a patch for an app (0.8.0 → 0.8.1, judged from the version that app is on now; an app
+on 0.7.x getting 0.8.1 is not), the workflow merges that app's PR once every check on it has
+passed (at least one must have run), then waits for the app's deploy of the merge commit to
+report success before it merges the next app, so apps deploy one at a time. A failed or pending
+check, a conflict, a timeout or an API error leaves the PR open with a comment saying why, and a
+deploy that doesn't confirm stops auto-merge for the rest of the run. The run summary lists each
+app as merged or left open. Turn it off per app with `"automerge": false` in `apps.json`, per run
+with the workflow's *automerge* input (or `--no-automerge`), or for every run with the repo
+variable `PROPAGATE_AUTOMERGE=off`.
 
 It needs the repo secret **`APPS_PR_TOKEN`**, a fine-grained GitHub token with *Contents* and
-*Pull requests* read and write on the app repos. Without it the run fails and says so.
+*Pull requests* read and write, and *Commit statuses* and *Checks* read, on the app repos.
+Without it the run fails and says so; without the two reads nothing auto-merges.
 
-To see what each app would get without pushing anything:
+To see what each app would get, and which PRs would merge themselves, without pushing or merging
+anything:
 
 ```bash
 npm run build
