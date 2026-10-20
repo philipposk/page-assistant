@@ -1,10 +1,12 @@
 import type { LLMProvider, LLMCompletionInput, LLMCompletionOutput, ChatMessage } from "@page-assistant/core";
 import { fetchWithRetry, llmTimeoutMs, maxTokens } from "./fetchWithRetry.js";
 import { HttpProviderError } from "./errors.js";
+import { acceptsEffort, acceptsForcedTool, acceptsSampling } from "./modelRules.js";
 
 /** Anthropic Messages API provider with tool calling. */
 export function anthropicProvider(opts: { apiKey: string; model?: string }): LLMProvider {
-  const model = opts.model ?? "claude-haiku-4-5-20251001";
+  // The alias, not a dated snapshot id. Lite stays on Haiku 4.5; Agent mode passes claude-haiku-5-5.
+  const model = opts.model ?? "claude-haiku-4-5";
   return {
     name: "anthropic",
     async complete(input: LLMCompletionInput): Promise<LLMCompletionOutput> {
@@ -15,13 +17,17 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
       }));
       const body: any = {
         model,
-        max_tokens: maxTokens(),
-        temperature: input.temperature ?? 0.3,
+        max_tokens: input.maxTokens ?? maxTokens(),
         system: input.system,
         messages: toAnthropicMessages(input.messages),
         tools,
       };
-      if (input.forceTool) body.tool_choice = { type: "tool", name: input.forceTool };
+      // Newer models answer a non-default temperature with a 400, so it is only sent where taken.
+      if (acceptsSampling(model)) body.temperature = input.temperature ?? 0.3;
+      // A model that refuses forced tool use gets `auto`; the caller's prompt names the tool.
+      if (input.forceTool && acceptsForcedTool(model)) body.tool_choice = { type: "tool", name: input.forceTool };
+      if (input.effort && acceptsEffort(model)) body.output_config = { effort: input.effort };
+      if (input.promptCache) body.cache_control = { type: "ephemeral" };
 
       const res = await fetchWithRetry(
         "https://api.anthropic.com/v1/messages",
@@ -34,7 +40,7 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
           },
           body: JSON.stringify(body),
         },
-        { timeoutMs: llmTimeoutMs() }
+        { timeoutMs: input.timeoutMs ?? llmTimeoutMs(), signal: input.signal }
       );
       if (!res.ok) {
         // Keep the raw provider body server-side only; surface a clean typed error.
@@ -51,7 +57,16 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
       const usage = data.usage
         ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens }
         : undefined;
-      return { toolCalls, text: text.trim(), usage, provider: "anthropic" };
+      return {
+        toolCalls,
+        text: text.trim(),
+        usage,
+        provider: "anthropic",
+        model: typeof data.model === "string" ? data.model : model,
+        stopReason: typeof data.stop_reason === "string" ? data.stop_reason : undefined,
+        // The whole content (thinking blocks included) so a tool round can hand it back as is.
+        assistantContent: Array.isArray(data.content) ? data.content : undefined,
+      };
     },
   };
 }
@@ -68,7 +83,10 @@ function toAnthropicMessages(messages: ChatMessage[]) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content });
     } else if (m.role === "assistant") {
-      if (m.toolCalls?.length) {
+      // A model with thinking on needs its own blocks back, unchanged, with the tool results.
+      if (m.providerContent?.provider === "anthropic" && Array.isArray(m.providerContent.content)) {
+        out.push({ role: "assistant", content: m.providerContent.content });
+      } else if (m.toolCalls?.length) {
         const content: any[] = [];
         if (m.content) content.push({ type: "text", text: m.content });
         for (const tc of m.toolCalls) content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.args });

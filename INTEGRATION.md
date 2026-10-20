@@ -12,6 +12,7 @@ git submodule add https://github.com/philipposk/page-assistant.git vendor/page-a
 # "@page-assistant/widget": "file:vendor/page-assistant/packages/widget"
 # "@page-assistant/server": "file:vendor/page-assistant/packages/server"
 # "@page-assistant/core": "file:vendor/page-assistant/packages/core"
+# Agent mode (React / Next.js) also: "@page-assistant/react": "file:vendor/page-assistant/packages/react" — see §9
 ```
 
 **npm** (when published):
@@ -39,6 +40,7 @@ Mount or reimplement these endpoints. **Every spend route must require your app'
 | `POST /v1/voice/tts` | ElevenLabs / OpenAI TTS |
 | `POST /v1/voice/stt` | Whisper STT |
 | `POST /v1/agent` | Optional: external agents drive server capabilities |
+| `POST /api/pa/agent` (any path) | Agent mode: the server-side tool loop for the React dock — see §9 |
 | `GET /llm.txt` | Human/agent-readable capability manifest |
 | `GET /.well-known/llm-actions.json` | Machine manifest |
 | `GET /v1/health` | Health check |
@@ -382,6 +384,203 @@ section in **`llm.txt`** for external agents.
 Copy **`docs/snippets/HelpTip.tsx`** and **`help-tip.css`** for portal-positioned `?`
 tooltips that do not clip at the top of the page. Reference:
 [Daybook](https://github.com/philipposk/daybook).
+
+## 9. Agent mode (server-side tool loop + React dock)
+
+Agent mode runs the assistant's tool loop **on your server**, next to your data and your auth,
+and gives React apps a dock that can show the product (navigate, highlight, narrate, guided
+walkthroughs). Read the [Lite vs Agent table](./README.md#two-modes-lite-and-agent) first. Lite
+keeps working unchanged; both can live in one app.
+
+What you build: **one route** (auth + your tools) and **one component**. The rest — the model
+call, risk tiers, confirm cards, the tainted-turn guard, the fact check, limits — is the SDK's.
+
+### 9.1 Install (Next.js, submodule like the other apps)
+
+```bash
+git submodule add https://github.com/philipposk/page-assistant.git vendor/page-assistant
+(cd vendor/page-assistant && npm ci --include=dev && npm run build)
+```
+
+```jsonc
+// package.json
+"@page-assistant/core":   "file:vendor/page-assistant/packages/core",
+"@page-assistant/server": "file:vendor/page-assistant/packages/server",
+"@page-assistant/widget": "file:vendor/page-assistant/packages/widget",
+"@page-assistant/react":  "file:vendor/page-assistant/packages/react"
+```
+
+The packages are not on npm yet, so `npm install @page-assistant/react` does not work; use the
+submodule (or copy each package's `dist` + `package.json`, as `riffscribe` does). Imports:
+`@page-assistant/server/next` and `@page-assistant/server/agent` (neither loads Express) and
+`@page-assistant/react`.
+
+Env (server only): `ANTHROPIC_API_KEY` (default model `claude-haiku-5-5`), optionally
+`OPENAI_API_KEY` / `OPENROUTER_API_KEY` as fallbacks (OpenAI also powers the mic), and for
+Supabase `SUPABASE_SERVICE_ROLE_KEY` for the confirm-card store.
+
+### 9.2 Database (Supabase)
+
+Apply two reference migrations from the SDK (copy into `supabase/migrations/` with a timestamp):
+
+| File | What |
+|---|---|
+| `packages/widget/supabase/assistant_chats.sql` | Saved chats, row-level security: each user sees only their own. Same table as Lite. |
+| `packages/server/supabase/assistant_pending_actions.sql` | Confirm cards. **Server-only**: RLS on, no policies; only the service role reads or writes it. A user who could insert rows could mint their own card. |
+
+### 9.3 The route — `app/api/pa/agent/route.ts`
+
+```ts
+import { createAgentRoute } from "@page-assistant/server/next";
+import { supabasePendingActionStore } from "@page-assistant/server/agent";
+import { currentUserId, supabaseForUser, supabaseService } from "@/lib/supabase/server";
+import { tools } from "@/lib/agent/tools";
+
+export const runtime = "nodejs";
+export const maxDuration = 60; // a turn ends by 50 s (PA_AGENT_TURN_DEADLINE_MS)
+
+export const { GET, POST } = createAgentRoute({
+  appName: "Recall",
+  assistantName: "Ada",
+  getUser: () => currentUserId(),          // required: no user → 401. Use your own session check.
+  context: () => supabaseForUser(),        // handed to tools as ctx.app: a client acting AS the user (RLS)
+  tools,
+  pendingActions: supabasePendingActionStore(supabaseService(), { app: "recall" }),
+  anchors: [{ name: "chats.list", description: "the imported chats" }],
+  pages: [{ path: "/folders", title: "Folders" }],
+  intro: { text: "Hi! I can search, label and file your chats.", suggestions: [{ label: "Show me around", prompt: "Give me a tour" }] },
+});
+```
+
+`currentUserId()` is your app's own check, e.g. with `@supabase/ssr`:
+`(await (await supabaseForUser()).auth.getUser()).data.user?.id ?? null`. `getUser` may
+return an id string or `{ id, ...anything }`; tools see it as `ctx.user`.
+
+Without Next.js: `createAgentHandler(options)` from `@page-assistant/server/agent` is a
+`(Request) => Response` for Hono, Deno, Bun or Workers, and `toNodeHandler(handler)` mounts it
+on Express / `node:http`.
+
+The route only takes `content-type: application/json` and refuses requests another site's page
+makes (it reads `Sec-Fetch-Site` / `Origin`), so a sibling app on the same domain can't drive it
+with the user's cookies. A dock on another origin needs `corsOrigin: "https://that.origin"`. When
+the user presses Stop (or closes the tab) the request's signal stops the turn: no further tool
+runs and the model request is cancelled; steps that already ran stay done.
+
+### 9.4 Tools (the important part)
+
+```ts
+import { defineTool } from "@page-assistant/server/agent";
+
+export const tools = [
+  defineTool({
+    name: "list_chats",
+    description: "List the user's imported chats.",
+    parameters: { type: "object", properties: { limit: { type: "integer" } } },
+    async run({ limit }, ctx) {                       // ctx.app = Supabase client as the user
+      const { data, error } = await ctx.app.from("chats").select("id,title").limit(limit ?? 10);
+      if (error) return { ok: false, error: "I couldn't read your chats." };
+      return { ok: true, count: data.length, chats: data };
+    },
+    render: (r) => r.ok === false ? r.error : `You have **${r.count}** chats.`,  // the step's trusted answer
+    factKeys: ["count"],
+  }),
+  defineTool({
+    name: "label_chat", description: "Put a label on a chat.", risk: "write",
+    parameters: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } }, required: ["id", "label"] },
+    confirmWhenTainted: { title: "Label this chat?", where: "Open the chat and use Labels." },
+    run: async ({ id, label }, ctx) => { /* update as the user */ return { ok: true, id, label }; },
+    render: (r) => `Labelled it **${r.label}**.`,
+    uiActions: (r) => [{ type: "highlight", anchor: "chats.list" }],
+  }),
+  defineTool({
+    name: "delete_chat", description: "Delete an imported chat for good.", risk: "confirm",
+    parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    confirm: {
+      button: "Delete",
+      async prepare({ id }, ctx) {                    // read-only check before the card
+        const { data } = await ctx.app.from("chats").select("title").eq("id", id).maybeSingle();
+        return data ? { title: "Delete this chat?", details: [`Chat: ${data.title}`] } : { ok: false, error: "No such chat." };
+      },
+    },
+    run: async ({ id }, ctx) => { /* runs only after the click, as the clicking user */ return { ok: true }; },
+    render: () => "Deleted.",
+  }),
+];
+```
+
+| Option | Meaning |
+|---|---|
+| `risk` | `"read"` (default) and `"write"` run at once; `"confirm"` never runs from a model call — the reply carries a card and only its single-use token (10 min, this user only) runs it, with no model involved. Use `confirm` for delete, send, pay, export, anything that can't be undone. |
+| `render` | Trusted user-facing text. A tool with `render` answers in those words (the model can't paraphrase numbers wrong). Without `render` (or with `chain: true`) the model reads the result and writes the reply, fact-checked. |
+| `factKeys` / `factTextKeys` | Which result numbers the model may quote; any other number in its prose is replaced by the rendered answers. |
+| `taints: true` | The result contains text someone else wrote (an imported chat, an email, a web page). From then on — this turn, and every later turn while that reply is still in the history the model reads (the dock tags it) — nothing changes without the user's OK: `write` tools are refused ("start a new chat"), or ask on a card if they have `confirmWhenTainted`. **Recall: every tool that returns message text should set this, and its low-risk writes (labels, folders) should have `confirmWhenTainted`.** |
+| `uiActions` / `uiActionMode` | View-only actions after a success: `navigate`, `highlight` (an anchor name), `narrate`, `wait`, and your own registered types. `"guided"` plays them one by one with the pointer. |
+| `suggestions`, `cards`, `progress`, `enabled`, `maxCallsPerTurn` | Follow-up chips; structured results for `renderCard`; a status line while it runs; a feature flag; a per-turn cap. |
+
+Every tool must do its own permission checks: it runs on the server, outside your HTTP routes.
+Passing a user-scoped Supabase client as `context` makes RLS do most of that.
+
+Navigation actions never go to `/api/...` or a sign-out path, on the server and again in the
+browser, and `point_at` can only open a page listed in `pages`. Arguments are checked against
+the full schema (enums, whole numbers, nested objects and array items) before `run`.
+
+Built in from config: `pages` adds an `open_page` tool, `anchors` adds `point_at`, and
+`walkthroughs: [{ id, title, description, steps: [...] }]` adds `start_walkthrough` (guided).
+Custom view-only action types: `uiActions: { select_rows: { schema: { type: "object", properties: { ids: { type: "array" } } } } }`.
+`refusals: [{ match: /delete my account/i, message: "..." }]` answers before the model.
+
+### 9.5 Voice routes (optional)
+
+```ts
+// app/api/pa/voice/stt/route.ts   (and …/tts/route.ts with `.tts`)
+import { createVoiceRoutes } from "@page-assistant/server/next";
+export const { POST } = createVoiceRoutes({ getUser: () => currentUserId() }).stt;
+```
+
+### 9.6 The dock — a client component in your layout
+
+```tsx
+"use client";
+import { AgentDock, supabaseChatHistoryAdapter, type ChatHistoryAdapter } from "@page-assistant/react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+
+export function Assistant() {
+  const router = useRouter();
+  const [history, setHistory] = useState<ChatHistoryAdapter | false>(false);
+  // Browser-only: the Supabase browser client must not run during prerender.
+  useEffect(() => setHistory(supabaseChatHistoryAdapter(supabaseBrowser(), { app: "recall" })), []);
+  return <AgentDock endpoint="/api/pa/agent" navigate={(p) => router.push(p)} history={history} voice />;
+}
+```
+
+Mark the places it may point at: `<ul {...paAnchor("chats.list")}>`. Listen for your own
+action types where the state lives: `usePaAction("select_rows", ({ ids }) => setSelected(ids))`
+(an action emitted just before the page mounted is replayed, so navigate-then-select works).
+Other props: `getPageState` (the view as data for the model), `actions` (handlers by type),
+`renderCard`, `theme`, `accentColor`, `position`, `title`, `intro`, `suggestions`,
+`stream` (default true: progress over Server-Sent Events). Without `history` chats stay on the
+device; `history={false}` keeps none. Building your own UI: `useAgentChat`, `useActionRunner`,
+`HighlightOverlay` and `PendingActionCard` are all exported.
+
+### 9.7 Limits and settings
+
+| Setting | Default | Env |
+|---|---|---|
+| Model | `claude-haiku-5-5`, then the router's OpenAI / OpenRouter fallback when Anthropic is busy | `PA_AGENT_MODEL` |
+| Fallback when the provider refuses the model (404, no access) | `claude-haiku-4-5`, remembered 10 min | `PA_AGENT_FALLBACK_MODEL` |
+| Tool rounds per turn | 8 | `limits.maxRounds` |
+| One model call / whole turn | 25 s / 50 s | `PA_AGENT_CALL_TIMEOUT_MS` / `PA_AGENT_TURN_DEADLINE_MS` |
+| Retries of a busy (429/5xx) or unreachable provider | 1 (timeouts are never retried: the call may still be billing) | `limits.maxRetries` |
+| History resent per call | newest turns within 4,000 tokens; narration and error lines dropped | `PA_AGENT_HISTORY_TOKENS` |
+| Output cap | 4,096, one redo at 8,192 when a reply is cut | `PA_AGENT_MAX_TOKENS` |
+| Per-user rate limit | 20/min, 400/day, in memory (per instance on serverless) | `rateLimit: { perMinute, perDay }` or a function |
+| Reasoning effort | the model's own | `PA_AGENT_EFFORT` |
+
+`onTurn(info)` gets one line per turn (outcome, tools, tokens, model, ms — never the user's
+text) for metering. On a failure the reply is still words: `errorCode` says whether a Retry is
+safe (`llm_*`: nothing changed), not useful (`llm_too_large`, `llm_not_configured`), or manual
+only (`internal_error`); `incomplete` means some steps ran and the message lists them.
 
 ## What you get for free
 

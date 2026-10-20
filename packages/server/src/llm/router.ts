@@ -83,6 +83,8 @@ export function routerFromEnv(env: NodeJS.ProcessEnv = process.env): LLMProvider
         try {
           return await p.complete({ ...input, model: undefined });
         } catch (e) {
+          // The caller gave up (Stop, or its deadline): don't start the same request elsewhere.
+          if (input.signal?.aborted) throw e;
           // A 4xx is a request/config problem (bad key, malformed body). Trying the next
           // provider just wastes spend and hides the real cause — surface it immediately.
           if (e instanceof HttpProviderError && e.isClientError) throw e;

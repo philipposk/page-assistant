@@ -17,7 +17,7 @@ export function openaiProvider(opts: { apiKey: string; model?: string; baseUrl?:
       const body: any = {
         model,
         // Cap output tokens: gpt-4o will otherwise happily emit up to 16k and bill for it.
-        max_tokens: maxTokens(),
+        max_tokens: input.maxTokens ?? maxTokens(),
         temperature: input.temperature ?? 0.3,
         messages: [{ role: "system", content: input.system }, ...toOpenAIMessages(input.messages)],
       };
@@ -32,7 +32,7 @@ export function openaiProvider(opts: { apiKey: string; model?: string; baseUrl?:
           headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
           body: JSON.stringify(body),
         },
-        { timeoutMs: llmTimeoutMs() }
+        { timeoutMs: input.timeoutMs ?? llmTimeoutMs(), signal: input.signal }
       );
       if (!res.ok) throw new HttpProviderError(providerName, res.status, await safeText(res));
       const data: any = await res.json();
@@ -45,7 +45,15 @@ export function openaiProvider(opts: { apiKey: string; model?: string; baseUrl?:
       const usage = data.usage
         ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens }
         : undefined;
-      return { toolCalls, text: (msg.content ?? "").trim(), usage, provider: providerName };
+      const finish = data.choices?.[0]?.finish_reason;
+      return {
+        toolCalls,
+        text: (msg.content ?? "").trim(),
+        usage,
+        provider: providerName,
+        model: typeof data.model === "string" ? data.model : model,
+        stopReason: typeof finish === "string" ? finish : undefined,
+      };
     },
   };
 }

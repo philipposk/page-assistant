@@ -2,6 +2,54 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.9.0 — Agent mode
+
+A second way to run the assistant, for React / Next.js apps: the tool loop runs on the server,
+next to the app's data and auth, and a React dock can show the product instead of describing
+it. It is a port of "Egon", the deal-agent page assistant, with its domain parts left out.
+Lite (the widget) is unchanged. All packages bumped `0.8.0 → 0.9.0` together; this is a minor
+release, so the propagate workflow opens PRs in the apps but merges none of them.
+
+- **`@page-assistant/server/agent`** (new subpath, no Express): `createAgent` / `createAgentHandler`
+  on the web `Request`/`Response`, `toNodeHandler` for Express, `createVoiceRoutes`.
+  - Risk tiers: `read` and `write` run at once; `confirm` returns a card whose single-use token
+    (hashed, user-bound, 10 minutes, atomic consume) is the only way the action runs. A card ends
+    the turn; a client without card support gets the action described in words and the stored
+    card withdrawn.
+  - Tainted turns: after a tool marked `taints` returns someone else's text, writes are refused
+    or need a card (`confirmWhenTainted`) — in that turn and in later turns while the reply is
+    still in the history the model reads — and replies keep no images, raw HTML or links a tool
+    didn't write.
+  - Requests: JSON only, cross-site requests refused (CSRF), bodies read with a byte cap; Stop or
+    a closed tab stops the turn before the next tool and cancels the model request.
+  - Limits: 8 rounds, 25 s per call, a 50 s turn deadline, one retry of a busy or unreachable
+    provider, a fallback model for 10 minutes when the provider refuses the chosen one, history
+    cut to 4,000 tokens without narration or error lines, a redo when a reply is cut, repeated
+    writes deduplicated, a stop after two rounds that only repeat themselves.
+  - Fact check: tools with `render` answer in their own words; model prose is checked against
+    `factKeys` / `factTextKeys` / rendered output and replaced when it states other numbers.
+  - View-only UI actions (`navigate`, `highlight` by anchor, `narrate`, `wait`, host-registered
+    types with schemas) and built-in `open_page`, `point_at`, `start_walkthrough` tools.
+  - Optional Server-Sent Events with progress; per-user rate limit; `onTurn` metering hook.
+  - `supabasePendingActionStore` and `supabase/assistant_pending_actions.sql` for serverless.
+  - Default model `claude-haiku-5-5` (env `PA_AGENT_MODEL`), Anthropic → OpenAI → OpenRouter.
+- **`@page-assistant/server/next`**: `createAgentRoute(options)` → `{ GET, POST }` for
+  `app/api/pa/agent/route.ts`.
+- **`@page-assistant/react`** (new package): `<AgentDock>` (React 19, no Tailwind or UI kit),
+  confirm cards, guided walkthroughs with a pointer ring and narration, an event bus with replay
+  (`usePaAction`), safe markdown, Stop / Retry, saved chats through the widget's
+  `ChatHistoryAdapter` (Supabase or device), voice. Headless hooks exported.
+- **Lite proxy** (`/v1/llm/complete`) ignores the new agent-only fields (`maxTokens`, `timeoutMs`,
+  `effort`, `promptCache`, replayed provider blocks) if a client sends them. **Voice**: a `voiceId`
+  that isn't a plain id is ignored.
+- **Anthropic provider** (Lite too): leaves out `temperature` for models that reject it
+  (Claude 5.x, Opus 4.7/4.8), sends forced tool choice only to models that accept it, and can
+  replay a model's own content blocks (thinking) on the next tool round. Lite's default model is
+  now written as the alias `claude-haiku-4-5` (it was the dated `claude-haiku-4-5-20251001`;
+  same model), and requests to it are otherwise unchanged.
+- **`@page-assistant/widget/supabase`** subpath export for the Supabase chat adapter.
+- `examples/next-agent`: a runnable Next.js + Supabase app. Guide: INTEGRATION.md §9.
+
 ## 0.8.0 — The widget on phones
 
 Found on an iPhone in Catchy (catchy.6x7.gr), which had worked around each of these in its own

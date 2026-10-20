@@ -155,7 +155,10 @@ export function createServer(config: ServerConfig = {}): Express {
   // --- LLM proxy: one tool-calling round. The widget's grounding loop drives this. ---
   app.post("/v1/llm/complete", guard, llmLimit, budgetGate, async (req, res) => {
     try {
-      const { model, messages, tools, ...rest } = req.body ?? {};
+      // Agent mode's per-call knobs (maxTokens, timeoutMs, effort, promptCache, signal) and
+      // replayed provider blocks are server-side only: a widget visitor must not lift the
+      // PA_MAX_TOKENS cap or the timeout by putting them in the body.
+      const { model, messages, tools, maxTokens: _m, timeoutMs: _t, effort: _e, promptCache: _p, signal: _s, ...rest } = req.body ?? {};
       // Validate the caller's body BEFORE handing it to a provider. A missing/invalid
       // `messages` is the CALLER's mistake → 400, not a misleading 502 that reads as "the
       // AI provider is down". `tools` is optional; default it so providers never map undefined.
@@ -165,7 +168,12 @@ export function createServer(config: ServerConfig = {}): Express {
       if (tools !== undefined && !Array.isArray(tools)) {
         return res.status(400).json({ error: "`tools` must be an array when provided." });
       }
-      const out = await llm.complete({ ...rest, model, messages, tools: tools ?? [] });
+      const clean = messages.map((m: unknown) => {
+        if (!m || typeof m !== "object") return m;
+        const { providerContent: _pc, ...msg } = m as Record<string, unknown>;
+        return msg;
+      });
+      const out = await llm.complete({ ...rest, model, messages: clean, tools: tools ?? [] });
       usage.record({ usage: out.usage, provider: out.provider });
       res.json(out);
     } catch (e) {

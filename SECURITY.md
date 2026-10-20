@@ -56,6 +56,44 @@ Pass `authToken` in `PageAssistant.init()` when using `PA_AUTH_TOKEN`, or prefer
 
 Scanned page text and `knowledgeUrl` content enter the system prompt. Mitigations: capability boundary, confirm gates, validator. Do not register overly broad capabilities (e.g. "run arbitrary SQL").
 
+### 6a. Agent mode (`@page-assistant/server/agent`, `/next`)
+
+- **`getUser` is required** and must check your real session; no user → 401. Every turn spends
+  model credit and every tool acts as that user.
+- **Tools run outside your HTTP routes**, so each must enforce permissions itself. Hand them a
+  client that acts as the user (`context`, e.g. a Supabase client with the user's session) so
+  row-level security does most of it.
+- **`risk: "confirm"` for anything that can't be undone** (delete, send, pay, export, invite).
+  A model call only creates a card; the action runs from the card's token: random, stored only
+  as a SHA-256 hash, single use (atomic delete), bound to the user, 10-minute lifetime, re-checked
+  against the tool's schema and `enabled` flag, and run as the *clicking* request's user. The
+  model is not involved in a confirm.
+- **On serverless, keep cards in a shared store** (`supabasePendingActionStore` with a
+  service-role client). `assistant_pending_actions.sql` gives users no access to the table on
+  purpose: a user who could insert rows could mint a card with arguments the server never
+  checked.
+- **`taints: true` on every tool that returns text someone else wrote** (messages, documents,
+  web pages). After such a read nothing changes without a card — for the rest of the turn and
+  for every later turn while that reply is still in the history the model reads (the reply says
+  `tainted: true`, the dock tags it in the history it sends back and in saved chats). `write`
+  tools are refused or turned into a card (`confirmWhenTainted`), and the reply's markdown is
+  cleaned: no images, raw HTML or in-text links except addresses a tool result wrote word for
+  word (a planted link could carry data out). The cleaner is linear-time and capped at 50 KB.
+- **CSRF**: the agent and voice routes take JSON only and refuse requests from another site
+  (`Sec-Fetch-Site`, else `Origin` vs host), unless `corsOrigin` names that origin. Sibling apps
+  on one domain share cookies (`SameSite=Lax`), so this matters on `*.6x7.gr`.
+- **Stop means stop**: the request's signal (Stop, a closed tab) is checked before every model
+  call and every tool, and cancels the provider request; nothing queued runs after it.
+- **Bounded input**: request bodies are read with a byte cap before parsing (also in
+  `toNodeHandler`, before sign-in runs); a voice id is accepted only as `[A-Za-z0-9_-]{1,64}`.
+- **UI actions are view-only**: in-app paths only, never `/api/...` or a sign-out path (checked
+  on the server and again in the browser), `point_at` only to registered pages, highlights by
+  anchor name only (never a selector), custom types validated against the schema you register.
+- **A confirmed run gets only its stored arguments** — not the page state at click time, which
+  may differ from what the card showed.
+- The built-in per-user rate limit is in memory (per instance on serverless); put a shared
+  limit in front (Upstash, the database) for a hard cap, via `rateLimit: (user) => ...`.
+
 ### 7. Memory (localStorage)
 
 `remember_fact` persists in the browser. Do not store secrets, tokens, or PCI data via memory capabilities.

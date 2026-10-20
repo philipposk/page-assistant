@@ -15,7 +15,7 @@ import { envInt } from "../env.js";
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
-  opts: { timeoutMs: number; retries?: number; backoffMs?: number }
+  opts: { timeoutMs: number; retries?: number; backoffMs?: number; signal?: AbortSignal }
 ): Promise<Response> {
   const retries = opts.retries ?? 1;
   const backoff = opts.backoffMs ?? 300;
@@ -23,12 +23,13 @@ export async function fetchWithRetry(
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       // Returns as soon as headers arrive; a 4xx/5xx is a resolved Response, not a throw.
-      return await fetch(url, { ...init, signal: AbortSignal.timeout(opts.timeoutMs) });
+      const timeout = AbortSignal.timeout(opts.timeoutMs);
+      return await fetch(url, { ...init, signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout });
     } catch (e) {
       lastErr = e;
       // Retry ONLY a genuine connection error, and only if we have attempts left. A timeout
       // (the request may have landed and be billing) or any other error is surfaced as-is.
-      if (attempt < retries && isRetryableConnectionError(e)) {
+      if (attempt < retries && isRetryableConnectionError(e) && !opts.signal?.aborted) {
         await new Promise((r) => setTimeout(r, backoff * (attempt + 1)));
         continue;
       }

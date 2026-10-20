@@ -1,0 +1,27 @@
+{
+  "name": "page-assistant-next-agent-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@page-assistant/core": "file:../../packages/core",
+    "@page-assistant/react": "file:../../packages/react",
+    "@page-assistant/server": "file:../../packages/server",
+    "@page-assistant/widget": "file:../../packages/widget",
+    "@supabase/ssr": "^0.12.0",
+    "@supabase/supabase-js": "^2.100.0",
+    "next": "~16.3.8",
+    "react": "~19.2.0",
+    "react-dom": "~19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "~19.2.0",
+    "@types/react-dom": "~19.2.0",
+    "typescript": "^5.6.0"
+  }
+}
