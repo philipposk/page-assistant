@@ -2,6 +2,14 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## Unreleased
+
+- **OpenRouter's Claude models use the Anthropic format.** Model ids starting `anthropic/` now go to
+  OpenRouter's `/messages` endpoint instead of chat completions, so thinking blocks come back between
+  tool rounds and the 5.x rules for temperature and forced `tool_choice` apply (OpenRouter ids such
+  as `anthropic/claude-haiku-5.5` are read like `claude-haiku-5-5`). Other OpenRouter models are
+  unchanged. `anthropicProvider` takes `baseUrl` and `auth: "bearer"` for this.
+
 ## 0.9.0 — Agent mode
 
 A second way to run the assistant, for React / Next.js apps: the tool loop runs on the server,

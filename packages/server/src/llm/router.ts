@@ -3,6 +3,7 @@ import { anthropicProvider } from "./anthropic.js";
 import { openaiProvider, OPENROUTER_BASE_URL } from "./openai.js";
 import { AllProvidersFailedError, HttpProviderError, isProviderSpecific } from "./errors.js";
 import { llmTimeoutMs } from "./fetchWithRetry.js";
+import { claudeIdFromOpenRouter } from "./modelRules.js";
 
 /**
  * Models the widget settings UI and /v1/models may offer, most capable first. The list lives
@@ -108,15 +109,18 @@ function buildChain(env: NodeJS.ProcessEnv): LLMProvider[] {
   const chain: LLMProvider[] = [];
   if (env.ANTHROPIC_API_KEY) chain.push(anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model: env.PA_ANTHROPIC_MODEL }));
   if (env.OPENAI_API_KEY) chain.push(openaiProvider({ apiKey: env.OPENAI_API_KEY, model: env.PA_OPENAI_MODEL }));
-  if (env.OPENROUTER_API_KEY)
-    chain.push(
-      openaiProvider({
-        apiKey: env.OPENROUTER_API_KEY,
-        baseUrl: OPENROUTER_BASE_URL,
-        model: env.PA_OPENROUTER_MODEL ?? MODEL_DEFAULTS.openrouter,
-      })
-    );
+  if (env.OPENROUTER_API_KEY) chain.push(openRouterProvider(env.OPENROUTER_API_KEY, env.PA_OPENROUTER_MODEL ?? MODEL_DEFAULTS.openrouter));
   return chain;
+}
+
+/**
+ * OpenRouter speaks both formats. Its Claude models go through the Anthropic-format endpoint
+ * (`/messages`), so thinking blocks survive between tool rounds and the model rules for
+ * temperature and forced tool_choice apply; every other model uses chat completions.
+ */
+function openRouterProvider(apiKey: string, model: string): LLMProvider {
+  if (claudeIdFromOpenRouter(model)) return anthropicProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, auth: "bearer", model });
+  return openaiProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, model });
 }
 
 function providerForModel(model: string, env: NodeJS.ProcessEnv): LLMProvider | null {
@@ -125,7 +129,7 @@ function providerForModel(model: string, env: NodeJS.ProcessEnv): LLMProvider | 
     return anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model });
   }
   if (lower.includes("/") && env.OPENROUTER_API_KEY) {
-    return openaiProvider({ apiKey: env.OPENROUTER_API_KEY, baseUrl: OPENROUTER_BASE_URL, model });
+    return openRouterProvider(env.OPENROUTER_API_KEY, model);
   }
   if (env.OPENAI_API_KEY) {
     return openaiProvider({ apiKey: env.OPENAI_API_KEY, model });

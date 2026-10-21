@@ -4,10 +4,13 @@
  * provider leaves out what a model does not take instead of sending it and failing.
  *
  * Ids are matched by family and version, so a dated id (`claude-haiku-4-5-20251001`) is
- * read the same as its alias.
+ * read the same as its alias. OpenRouter's spelling goes through `claudeIdFromOpenRouter` first.
  */
 
 const id = (model: string) => model.trim().toLowerCase();
+
+/** An alias that moves to each new model (OpenRouter's `~anthropic/claude-opus-latest`). */
+const floating = (m: string) => /-latest$/.test(m);
 
 /**
  * Whether `temperature` may be sent. The 5.x generation and Opus 4.7/4.8 answer a
@@ -16,6 +19,7 @@ const id = (model: string) => model.trim().toLowerCase();
  */
 export function acceptsSampling(model: string): boolean {
   const m = id(model);
+  if (floating(m)) return false;
   if (/^claude-(fable|mythos)/.test(m)) return false;
   if (/^claude-(opus|sonnet|haiku)-5/.test(m)) return false;
   if (/^claude-opus-4-[78]/.test(m)) return false;
@@ -31,6 +35,7 @@ export function acceptsSampling(model: string): boolean {
  */
 export function acceptsForcedTool(model: string): boolean {
   const m = id(model);
+  if (floating(m)) return false;
   if (/^claude-(fable|mythos)-5-[1-9]\d?(?!\d)/.test(m)) return false;
   if (/^claude-(fable|mythos)-[6-9]/.test(m)) return false;
   if (/^claude-(opus|sonnet)-5-(?:[5-9]|[1-9]\d)(?!\d)/.test(m)) return false;
@@ -60,13 +65,19 @@ export function thinksByDefault(model: string): boolean {
 }
 
 /**
- * A Claude model as OpenRouter writes it (`anthropic/claude-opus-4.7`) in Anthropic's own
- * form (`claude-opus-4-7`), so the rules above apply to it too; null for any other model.
+ * A Claude model as OpenRouter writes it (`anthropic/claude-opus-4.7`, older ones version
+ * first: `anthropic/claude-3.5-haiku`, aliases `~anthropic/claude-opus-latest`) in Anthropic's
+ * own form (`claude-opus-4-7`, `claude-haiku-3-5`), so the rules above apply to it too; null
+ * for any other model.
  */
 export function claudeIdFromOpenRouter(model: string): string | null {
   const m = id(model);
-  if (!m.startsWith("anthropic/")) return null;
-  return m.slice("anthropic/".length).replace(/:.*$/, "").replace(/\./g, "-");
+  if (!/^~?anthropic\//.test(m)) return null;
+  return m
+    .replace(/^~?anthropic\//, "")
+    .replace(/:.*$/, "")
+    .replace(/\./g, "-")
+    .replace(/^claude-(\d+(?:-\d+)?)-(opus|sonnet|haiku)\b/, "claude-$2-$1");
 }
 
 /**
