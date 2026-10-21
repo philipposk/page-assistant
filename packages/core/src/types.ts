@@ -131,6 +131,18 @@ export interface ChatMessage {
    * appended verbatim so the provider sees a coherent call→result pairing.
    */
   toolCalls?: ToolCallRef[];
+  /**
+   * Agent mode only: the provider's own assistant content for this turn (for Anthropic, the
+   * content blocks including any `thinking` blocks), replayed verbatim to that same provider on
+   * the next tool round. Models with thinking on need their thinking blocks passed back with
+   * tool results. Ignored by every other provider, which use `content` + `toolCalls`.
+   */
+  providerContent?: { provider: string; content: unknown };
+  /**
+   * Agent mode only: this assistant turn contains text someone else wrote (a tool marked
+   * `taints` ran). A turn whose history holds one starts tainted.
+   */
+  tainted?: boolean;
 }
 
 export interface ChatRequest {
@@ -180,11 +192,26 @@ export interface LLMCompletionInput {
   temperature?: number;
   /** Optional model override (passed from widget settings through server proxy). */
   model?: string;
+  /** Per-call timeout in ms. Default: the provider's own (PA_LLM_TIMEOUT_MS). Agent mode sets it per call. */
+  timeoutMs?: number;
+  /** Output token cap for this call. Default: PA_MAX_TOKENS. */
+  maxTokens?: number;
+  /** Reasoning effort, sent only to models that take it ("low" | "medium" | "high"). */
+  effort?: string;
+  /** Ask the provider to cache the prompt prefix (Anthropic top-level cache_control). */
+  promptCache?: boolean;
+  /** Cancels the HTTP request (agent mode: the user pressed Stop, or the turn's deadline passed). */
+  signal?: AbortSignal;
 }
 
 export interface LLMTokenUsage {
+  /** Whole prompt size; for a provider with prompt caching this includes cached tokens. */
   promptTokens?: number;
   completionTokens?: number;
+  /** Of `promptTokens`, how many were read from the prompt cache (when the provider says). */
+  cacheReadTokens?: number;
+  /** Of `promptTokens`, how many were written to the prompt cache (when the provider says). */
+  cacheCreationTokens?: number;
 }
 
 export interface LLMCompletionOutput {
@@ -195,4 +222,10 @@ export interface LLMCompletionOutput {
   usage?: LLMTokenUsage;
   /** Which provider actually served this completion (after any fallback). */
   provider?: string;
+  /** Why the provider stopped ("end_turn", "tool_use", "max_tokens", "refusal", "length", ...). */
+  stopReason?: string;
+  /** Provider-native assistant content, to replay on the next tool round (see ChatMessage.providerContent). */
+  assistantContent?: unknown;
+  /** The model that served it, when the provider reports one. */
+  model?: string;
 }

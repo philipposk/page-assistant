@@ -1,5 +1,6 @@
 // Voice proxy: TTS via ElevenLabs (falls back to OpenAI), STT via OpenAI Whisper.
 // Ported in spirit from earlier voice services, including Daisy's. Keys stay server-side.
+import { MODEL_DEFAULTS } from "@page-assistant/core";
 import { fetchWithRetry, voiceTimeoutMs } from "./llm/fetchWithRetry.js";
 import { HttpProviderError } from "./llm/errors.js";
 
@@ -18,10 +19,14 @@ export function toIso639(lang?: unknown): string | undefined {
   return /^[a-z]{2,3}$/.test(base) ? base : undefined;
 }
 
+/** A voice id as the providers write them. Anything else is ignored: it goes into a URL path. */
+const VOICE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 export async function synthesize(req: TTSRequest, env = process.env): Promise<{ audio: Buffer; contentType: string }> {
+  const voiceId = typeof req.voiceId === "string" && VOICE_ID_RE.test(req.voiceId) ? req.voiceId : undefined;
   const provider = req.provider ?? (env.ELEVENLABS_API_KEY ? "elevenlabs" : "openai");
   if (provider === "elevenlabs" && env.ELEVENLABS_API_KEY) {
-    const voice = req.voiceId ?? env.PA_ELEVENLABS_VOICE ?? "21m00Tcm4TlvDq8ikWAM"; // Rachel
+    const voice = voiceId ?? env.PA_ELEVENLABS_VOICE ?? "21m00Tcm4TlvDq8ikWAM"; // Rachel
     const res = await fetchWithRetry(
       `https://api.elevenlabs.io/v1/text-to-speech/${voice}`,
       {
@@ -46,7 +51,7 @@ export async function synthesize(req: TTSRequest, env = process.env): Promise<{ 
     {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: "gpt-4o-mini-tts", voice: req.voiceId ?? "nova", input: req.text }),
+      body: JSON.stringify({ model: MODEL_DEFAULTS.openaiTts, voice: voiceId ?? "nova", input: req.text }),
     },
     { timeoutMs: voiceTimeoutMs() }
   );

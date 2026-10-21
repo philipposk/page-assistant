@@ -36,11 +36,11 @@ test("model ids carry no date suffix", () => {
 
 test("the current Claude family is offered, newest first", () => {
   const ids = DEFAULT_MODELS.map((m) => m.id);
-  for (const id of ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]) {
+  for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-4-5", "claude-fable-5-1"]) {
     assert.ok(ids.includes(id), `${id} missing from the picker`);
   }
-  assert.equal(ids[0], "claude-opus-5", "most capable model should lead the list");
-  assert.ok(!ids.some((id) => id.includes("claude-3.5") || id === "claude-sonnet-4"), "superseded models removed");
+  assert.equal(ids[0], "claude-opus-5-5", "most capable model should lead the list");
+  assert.ok(!ids.some((id) => id.includes("claude-3") || id === "claude-sonnet-4"), "superseded models removed");
 });
 
 test("the default model is 'let the server choose'", () => {

@@ -15,7 +15,7 @@ import { envInt } from "../env.js";
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
-  opts: { timeoutMs: number; retries?: number; backoffMs?: number }
+  opts: { timeoutMs: number; retries?: number; backoffMs?: number; signal?: AbortSignal }
 ): Promise<Response> {
   const retries = opts.retries ?? 1;
   const backoff = opts.backoffMs ?? 300;
@@ -23,13 +23,15 @@ export async function fetchWithRetry(
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       // Returns as soon as headers arrive; a 4xx/5xx is a resolved Response, not a throw.
-      return await fetch(url, { ...init, signal: AbortSignal.timeout(opts.timeoutMs) });
+      const timeout = AbortSignal.timeout(opts.timeoutMs);
+      return await fetch(url, { ...init, signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout });
     } catch (e) {
       lastErr = e;
       // Retry ONLY a genuine connection error, and only if we have attempts left. A timeout
       // (the request may have landed and be billing) or any other error is surfaced as-is.
-      if (attempt < retries && isRetryableConnectionError(e)) {
-        await new Promise((r) => setTimeout(r, backoff * (attempt + 1)));
+      if (attempt < retries && isRetryableConnectionError(e) && !opts.signal?.aborted) {
+        await pause(backoff * (attempt + 1), opts.signal);
+        if (opts.signal?.aborted) break;
         continue;
       }
       break;
@@ -37,6 +39,20 @@ export async function fetchWithRetry(
   }
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr);
   throw new Error(`network error: ${reason}`);
+}
+
+/** Waits `ms`, or less when `signal` fires: Stop must not wait out a backoff. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -72,4 +88,14 @@ export function voiceTimeoutMs(): number {
 
 export function maxTokens(): number {
   return envInt("PA_MAX_TOKENS", 1024, { min: 1 });
+}
+
+/**
+ * The output cap when the caller names none. A model that thinks first spends the cap on that
+ * too, so it gets at least `thinkingFloor` — unless the operator set PA_MAX_TOKENS, which is a
+ * spend limit and is kept as set (a reply may then be cut, which is the operator's call).
+ */
+export function defaultMaxTokens(thinks: boolean, thinkingFloor: number): number {
+  const operatorSet = (process.env.PA_MAX_TOKENS ?? "") !== "";
+  return thinks && !operatorSet ? Math.max(maxTokens(), thinkingFloor) : maxTokens();
 }

@@ -38,6 +38,40 @@ And a few things that keep it accurate as your app changes:
 
 Capabilities run **in the page**, so results never round-trip through the model — that's what makes them trustworthy.
 
+## Two modes: Lite and Agent
+
+| | **Lite** (the widget) | **Agent** (new in 0.9) |
+|---|---|---|
+| Where the tool loop runs | In the browser; the server only proxies one model call at a time | On your server, next to your data and your auth |
+| Where actions run | Browser functions you register (`capability()`) | Server tools that call your real API **as the signed-in user** |
+| UI | Vanilla DOM widget, any site (script tag or ESM) | React 19 dock (`@page-assistant/react`), for React / Next.js apps |
+| Writes and deletes | `confirm: true` asks before running | Risk tiers: `read` / `write` run at once, `confirm` returns a card with a **single-use token**; only the click runs it, never the model |
+| Prompt injection | Grounding + validator | Plus **tainted turns**: after reading text someone else wrote, writes are refused or need a card |
+| Shows the product | Links in replies | View-only UI actions: navigate, highlight a `data-pa-anchor`, narrate, guided walkthroughs with a pointer |
+| Limits | Rate limits on the proxy | Per-user limits, bounded rounds, per-call timeout, a turn deadline, retry, fallback model |
+| Streaming | — | Optional Server-Sent Events with progress ("Searching your notes…") |
+| Chats | Device or account (Supabase) | Same adapters and the same `assistant_chats` table |
+
+**Pick Lite** for a static or non-React site, a script-tag embed, or when the actions are
+things the page itself can do (filter a list, run a calculator). **Pick Agent** when the
+assistant should change real data (create, rename, delete, send), when you need a confirm step
+you can trust, or when it should demonstrate the product with walkthroughs. Both can share one
+app: they use separate routes and keep working side by side. Agent mode is a port of the "Egon"
+assistant (a production page assistant with ~120 tools) with its domain parts left out.
+
+```
+┌──────── browser ────────┐   POST /api/pa/agent    ┌──────────── your server (e.g. a Next.js route) ────────────┐
+│ @page-assistant/react    │ ───────────────────────▶│ @page-assistant/server/next  createAgentRoute({ getUser,   │
+│  • dock, confirm cards   │   JSON or SSE progress   │   tools })                                                 │
+│  • runs view-only UI     │◀─────────────────────── │  • tool loop, risk tiers, confirm tokens, tainted turns     │
+│    actions (navigate,    │   reply + uiActions +    │  • fact validator, deadline, retry, fallback model         │
+│    highlight, narrate)   │   pendingAction card     │  • tools run as the user (e.g. Supabase client + RLS)      │
+└──────────────────────────┘                          └────────────────────────────────────────────────────────────┘
+```
+
+Setup: [INTEGRATION.md §9](./INTEGRATION.md#9-agent-mode-server-side-tool-loop--react-dock) and the runnable
+[`examples/next-agent`](./examples/next-agent) (Next.js + Supabase).
+
 ## Quick start
 
 The packages are **not on npm yet** — this repo is the source of truth. Clone and
@@ -358,7 +392,8 @@ docker run -p 8787:8787 \
 |---|---|
 | `@page-assistant/core` | Grounding brain: capability registry, tool loop, validator, `llm.txt` generator. Runs in browser or Node. |
 | `@page-assistant/widget` | The embeddable browser widget (UI, scanner, voice). |
-| `@page-assistant/server` | Node backend: LLM proxy, voice, agent endpoint, `llm.txt` hosting. |
+| `@page-assistant/server` | Node backend: LLM proxy, voice, agent endpoint, `llm.txt` hosting. Agent mode lives in `@page-assistant/server/agent` (framework-agnostic) and `@page-assistant/server/next` (App Router helper); neither imports Express. |
+| `@page-assistant/react` | Agent mode dock for React 19 / Next.js, plus headless hooks (`useAgentChat`, `useActionRunner`, `usePaAction`). |
 | `@page-assistant/cli` | Command line: `health`, `models`, `chat` (→ `/v1/agent`), `serve` a proxy (with optional `--config` for capabilities). |
 | `@page-assistant/mcp` | MCP stdio server exposing the assistant to Cursor / Claude Desktop as `ask_page_assistant`. |
 
@@ -367,7 +402,9 @@ A dependency-free Python REST client also lives in `packages/python` (not yet on
 ## Tests
 
 ```bash
-npm test     # proves the anti-hallucination guarantees
+npm run build                                # tests run against dist/
+npm test                                     # core, widget, react, propagate
+node --test packages/server/test/*.test.mjs  # server + Agent mode (stub LLM, no keys needed)
 ```
 
 ## Publishing (maintainers)
@@ -376,13 +413,13 @@ Packages publish automatically from `.github/workflows/release.yml` when you pus
 version tag:
 
 ```bash
-# bump every package to the new version first (root + all 5 packages + internal pins),
+# bump every package to the new version first (root + all 6 packages + internal pins),
 # commit, then:
 git tag v0.7.0 && git push --tags
 ```
 
 The workflow builds, typechecks, tests, and `npm publish`es core → widget → server →
-cli → mcp. It requires a repo secret **`NPM_TOKEN`** (an npm automation token with
+react → cli → mcp. It requires a repo secret **`NPM_TOKEN`** (an npm automation token with
 publish rights to the `@page-assistant` scope). Versions that already exist on npm will
 fail the publish, so always bump before tagging.
 

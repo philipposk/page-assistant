@@ -21,11 +21,20 @@ Make the assistant able to do **everything a signed-in user could do** on that s
    `llm.txt`, and nudge the model from `getPageState()` — see
    [docs/CONTEXTUAL_HELP.md](./docs/CONTEXTUAL_HELP.md).
 
+## Agent mode (React / Next.js apps)
+
+For an app where the assistant should change real data or demonstrate the product, use
+**Agent mode** instead of (or next to) the widget: one route with
+`createAgentRoute({ getUser, context, tools })` from `@page-assistant/server/next`, and
+`<AgentDock endpoint="/api/pa/agent" />` from `@page-assistant/react`. Mark deletes / sends /
+payments `risk: "confirm"`, set `taints: true` on tools that return other people's text, and
+keep confirm cards in Supabase on Vercel. See INTEGRATION.md §9 and `examples/next-agent`.
+
 ## Do not
 
 - Skip auth on LLM/voice/agent routes in production
 - Register capabilities that bypass the app's normal permission checks
-- Set `confirm: false` on delete/pay/checkout/send-email actions
+- Set `confirm: false` on delete/pay/checkout/send-email actions (Agent mode: anything but `risk: "confirm"`)
 - Pass user-controlled URLs as `knowledgeUrl` (same-origin only)
 - Duplicate voice-settings UI — use `mountVoiceSettingsPanel()` from `@page-assistant/widget`
 

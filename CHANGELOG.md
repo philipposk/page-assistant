@@ -2,6 +2,93 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## 0.9.0 — Agent mode
+
+A second way to run the assistant, for React / Next.js apps: the tool loop runs on the server,
+next to the app's data and auth, and a React dock can show the product instead of describing
+it. It is a port of "Egon", the deal-agent page assistant, with its domain parts left out.
+Lite (the widget) is unchanged. All packages bumped `0.8.0 → 0.9.0` together; this is a minor
+release, so the propagate workflow opens PRs in the apps but merges none of them.
+
+- **`@page-assistant/server/agent`** (new subpath, no Express): `createAgent` / `createAgentHandler`
+  on the web `Request`/`Response`, `toNodeHandler` for Express, `createVoiceRoutes`.
+  - Risk tiers: `read` and `write` run at once; `confirm` returns a card whose single-use token
+    (hashed, user-bound, 10 minutes, atomic consume) is the only way the action runs. A card ends
+    the turn; a client without card support gets the action described in words and the stored
+    card withdrawn.
+  - Tainted turns: after a tool marked `taints` returns someone else's text, writes are refused
+    or need a card (`confirmWhenTainted`) — in that turn and in later turns while the reply is
+    still in the history the model reads — and replies keep no images, raw HTML or links a tool
+    didn't write (never from a built-in, never one the model put in a call's arguments). A
+    confirmed run of a `taints` tool taints too, and so does the click on any card offered in a
+    tainted turn (the pending row keeps `tainted`). Narration is cleaned like the reply. Page
+    context can be marked untrusted (`page.untrusted` per request, or `pageContext:
+    "untrusted"`, which counts title, state and path); the query string never reaches the
+    model, and a path segment that isn't a plain word, short slug, number or UUID reaches it as
+    `:param`.
+  - Requests: JSON only (the media type exactly), cross-site requests refused (CSRF; `corsOrigin:
+    "*"` never lets a cross-site page in), bodies read with a byte cap; Stop or a closed tab
+    stops the turn before the next tool and cancels the model request. A tool, a card's
+    `prepare` and a confirmed run are bounded by the turn deadline even when they ignore
+    `ctx.signal`.
+  - Navigation targets are resolved before they're checked (`/notes/../api/x`, `/%2e/api`), and
+    never go to `/api`, any sign-out / log-out path, a `;` path parameter, a double-encoded path
+    or a sign-out asked for in the query.
+  - Limits: 8 rounds, 25 s per call, a 50 s turn deadline, one retry of a busy or unreachable
+    provider, a fallback model for 10 minutes when the provider refuses the chosen one, history
+    cut to 4,000 tokens without narration or error lines, a redo when a reply is cut, repeated
+    writes deduplicated, a stop after two rounds that only repeat themselves.
+  - Fact check: tools with `render` answer in their own words; model prose is checked against
+    `factKeys` / `factTextKeys` / rendered output and replaced when it states other numbers.
+  - View-only UI actions (`navigate`, `highlight` by anchor, `narrate`, `wait`, host-registered
+    types with schemas) and built-in `open_page`, `point_at`, `start_walkthrough` tools.
+  - Optional Server-Sent Events with progress; per-user rate limit; `onTurn` metering hook
+    (`usage.promptTokens` includes cached tokens; `cacheReadTokens` / `cacheCreationTokens`
+    say how many).
+  - `supabasePendingActionStore` (its `app` option is required) and
+    `supabase/assistant_pending_actions.sql` for serverless (re-run it on a table made from an
+    earlier copy: it adds the `tainted` column).
+  - Default model `claude-haiku-5-5` (env `PA_AGENT_MODEL`), Anthropic → OpenAI → OpenRouter.
+- **`@page-assistant/server/next`**: `createAgentRoute(options)` → `{ GET, POST }` for
+  `app/api/pa/agent/route.ts`.
+- **`@page-assistant/react`** (new package): `<AgentDock>` (React 19, no Tailwind or UI kit),
+  confirm cards, guided walkthroughs with a pointer ring and narration, an event bus with replay
+  (`usePaAction`), safe markdown, Stop / Retry, saved chats through the widget's
+  `ChatHistoryAdapter` (Supabase or device — device chats need `userId`, and the chat resets
+  when it changes), voice that lets the mic go when the panel closes. Markdown never lets a
+  link span a line break, and in a tainted reply (`untrusted`) an address holding markup is
+  not a link, matching the server's cleaner. Headless hooks exported;
+  `@page-assistant/react/anchors` for Server Components.
+- **Lite proxy** (`/v1/llm/complete`) ignores the new agent-only fields (`maxTokens`, `timeoutMs`,
+  `effort`, `promptCache`) if a client sends them, and keeps replayed provider blocks only as
+  thinking / text / tool_use. Its reply no longer carries `model` or `stopReason`. **Voice**: a
+  `voiceId` that isn't a plain id is ignored.
+- **Anthropic provider** (Lite too): leaves out `temperature` for models that reject it
+  (Claude 5.x, Opus 4.7/4.8), sends forced tool choice only to models that accept it, and can
+  replay a model's own content blocks (thinking) on the next tool round (Lite's loop now keeps
+  them too). With no output cap named, a model that thinks by default (Claude 5.x) gets at least
+  4,096 tokens and low effort, unless the operator set `PA_MAX_TOKENS` (a spend cap, kept as
+  set). Prompt usage counts cached tokens. Lite's default model is
+  now written as the alias `claude-haiku-4-5` (it was the dated `claude-haiku-4-5-20251001`;
+  same model), and requests to it are otherwise unchanged.
+- **Router fallback**: Anthropic → OpenAI → OpenRouter now also moves on when a provider refuses
+  the key (401/403), is out of credit (402, or a 400 saying so) or doesn't have the model (404),
+  not only when it is busy or down. A malformed request still fails at once, a timed-out one is
+  not sent again elsewhere (it may still be billing), and the chain shares one time budget, so a
+  fallback isn't started only to be cut off. A retry's wait ends at once on Stop.
+- **OpenAI / OpenRouter provider** builds the request per model: OpenAI's reasoning models
+  (o-series, GPT-5) get no `temperature`, `max_completion_tokens` with room to reason and low
+  effort when no cap is named; a Claude model on OpenRouter follows the same rules as on
+  Anthropic (no temperature or forced tool use on 5.x).
+- **Model ids live in one list**, `MODEL_DEFAULTS` / `MODEL_CATALOG` in `@page-assistant/core`
+  (OpenRouter's default was `anthropic/claude-3.5-haiku`, which OpenRouter no longer serves; it
+  is now `anthropic/claude-haiku-4.5`). The picker offers the Claude 5.5 models. A test fails if
+  any other source file spells a model id, and a weekly workflow (`models.yml`) checks every id
+  against the providers' live lists and opens an issue when one is gone or due to retire within
+  60 days. `.env.example` no longer pins models.
+- **`@page-assistant/widget/supabase`** subpath export for the Supabase chat adapter.
+- `examples/next-agent`: a runnable Next.js + Supabase app. Guide: INTEGRATION.md §9.
+
 ## 0.8.0 — The widget on phones
 
 Found on an iPhone in Catchy (catchy.6x7.gr), which had worked around each of these in its own

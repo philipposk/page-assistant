@@ -21,6 +21,7 @@ import {
 } from "@page-assistant/core";
 import { routerFromEnv, modelCatalog } from "./llm/router.js";
 import { HttpProviderError } from "./llm/errors.js";
+import { sanitizeProviderContent } from "./llm/providerContent.js";
 import { synthesize, transcribe } from "./voice.js";
 import { rateLimit, bearerAuth } from "./ratelimit.js";
 import { envInt, envBool, trustProxySetting, log } from "./env.js";
@@ -155,7 +156,12 @@ export function createServer(config: ServerConfig = {}): Express {
   // --- LLM proxy: one tool-calling round. The widget's grounding loop drives this. ---
   app.post("/v1/llm/complete", guard, llmLimit, budgetGate, async (req, res) => {
     try {
-      const { model, messages, tools, ...rest } = req.body ?? {};
+      // Agent mode's per-call knobs (maxTokens, timeoutMs, effort, promptCache, signal)
+      // are server-side only: a widget visitor must not lift the PA_MAX_TOKENS cap or the
+      // timeout by putting them in the body. Replayed provider blocks (a thinking model's own
+      // turn, handed back with its tool results) are kept, but cut down to the block kinds a
+      // model's turn is made of.
+      const { model, messages, tools, maxTokens: _m, timeoutMs: _t, effort: _e, promptCache: _p, signal: _s, ...rest } = req.body ?? {};
       // Validate the caller's body BEFORE handing it to a provider. A missing/invalid
       // `messages` is the CALLER's mistake → 400, not a misleading 502 that reads as "the
       // AI provider is down". `tools` is optional; default it so providers never map undefined.
@@ -165,9 +171,18 @@ export function createServer(config: ServerConfig = {}): Express {
       if (tools !== undefined && !Array.isArray(tools)) {
         return res.status(400).json({ error: "`tools` must be an array when provided." });
       }
-      const out = await llm.complete({ ...rest, model, messages, tools: tools ?? [] });
+      const clean = messages.map((m: unknown) => {
+        if (!m || typeof m !== "object") return m;
+        const { providerContent: pc, ...msg } = m as Record<string, unknown>;
+        const safe = sanitizeProviderContent(pc);
+        return safe ? { ...msg, providerContent: safe } : msg;
+      });
+      const out = await llm.complete({ ...rest, model, messages: clean, tools: tools ?? [] });
       usage.record({ usage: out.usage, provider: out.provider });
-      res.json(out);
+      // Only what the widget's loop reads. `model` and `stopReason` are left out so a visitor
+      // does not learn which model a deployment pins (PA_FIXED_MODEL).
+      const { toolCalls, text, usage: tokens, provider, assistantContent } = out;
+      res.json({ toolCalls, text, usage: tokens, provider, assistantContent });
     } catch (e) {
       handleError(res, e, "/v1/llm/complete", reqId(req));
     }

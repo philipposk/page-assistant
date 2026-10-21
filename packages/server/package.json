@@ -1,15 +1,20 @@
 {
   "name": "@page-assistant/server",
-  "version": "0.8.0",
-  "description": "Node backend for the page assistant: LLM proxy, voice (TTS/STT), external agent endpoint, llm.txt hosting.",
+  "version": "0.9.0",
+  "description": "Node backend for the page assistant: LLM proxy, voice (TTS/STT), external agent endpoint, llm.txt hosting, and Agent mode (server-side tool loop with a Next.js route helper).",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": { "page-assistant-server": "./dist/bin.js" },
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist", "LICENSE", "README.md"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js", "default": "./dist/agent/index.js" },
+    "./next": { "types": "./dist/agent/next.d.ts", "import": "./dist/agent/next.js", "default": "./dist/agent/next.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "supabase", "LICENSE", "README.md"],
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/server" },
   "scripts": {
@@ -19,7 +24,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@page-assistant/core": "0.8.0",
+    "@page-assistant/core": "0.9.0",
     "express": "^4.21.0"
   },
   "devDependencies": {

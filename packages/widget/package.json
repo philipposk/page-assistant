@@ -1,13 +1,17 @@
 {
   "name": "@page-assistant/widget",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Embeddable browser widget: floating voice assistant, page scanner, grounded actions.",
   "license": "MIT",
   "engines": { "node": ">=20.6.0" },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./supabase": { "types": "./dist/adapters/supabase.d.ts", "import": "./dist/adapters/supabase.js", "default": "./dist/adapters/supabase.js" },
+    "./package.json": "./package.json"
+  },
   "files": ["dist", "supabase", "LICENSE", "README.md"],
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "https://github.com/philipposk/page-assistant.git", "directory": "packages/widget" },
@@ -16,7 +20,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@page-assistant/core": "0.8.0"
+    "@page-assistant/core": "0.9.0"
   },
   "devDependencies": {
     "@types/dom-speech-recognition": "^0.0.4"
