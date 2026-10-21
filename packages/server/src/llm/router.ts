@@ -1,22 +1,18 @@
-import type { LLMProvider, LLMCompletionInput } from "@page-assistant/core";
+import { MODEL_CATALOG, MODEL_DEFAULTS, type CatalogModel, type LLMProvider, type LLMCompletionInput } from "@page-assistant/core";
 import { anthropicProvider } from "./anthropic.js";
-import { openaiProvider } from "./openai.js";
-import { HttpProviderError } from "./errors.js";
+import { openaiProvider, OPENROUTER_BASE_URL } from "./openai.js";
+import { AllProvidersFailedError, HttpProviderError, isProviderSpecific } from "./errors.js";
+import { llmTimeoutMs } from "./fetchWithRetry.js";
+import { claudeIdFromOpenRouter } from "./modelRules.js";
 
 /**
- * Models the widget settings UI and /v1/models may offer, newest and most capable first.
- * Ids are exact and carry no date suffix (`claude-haiku-4-5`, never
- * `claude-haiku-4-5-20251001`).
+ * Models the widget settings UI and /v1/models may offer, most capable first. The list lives
+ * in core (MODEL_CATALOG), with every other model id, so a retired one is changed in one place.
  */
-export const AVAILABLE_MODELS = [
-  { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic" },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic" },
-  { id: "claude-fable-5-1", label: "Claude Fable 5.1", provider: "anthropic" },
-  { id: "gpt-4o-mini", label: "GPT-4o Mini", provider: "openai" },
-  { id: "gpt-4o", label: "GPT-4o", provider: "openai" },
-  { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5 (OpenRouter)", provider: "openrouter" },
-];
+export const AVAILABLE_MODELS: readonly CatalogModel[] = MODEL_CATALOG;
+
+/** Time the next provider in the chain needs to be worth starting. */
+const MIN_FALLBACK_MS = 3_000;
 
 /**
  * What this deployment will actually honour for `model`, for `GET /v1/models`.
@@ -50,6 +46,12 @@ export function modelCatalog(env: NodeJS.ProcessEnv = process.env): {
 /**
  * Pick an LLM provider from env, with a fallback chain (Anthropic → OpenAI → OpenRouter).
  * Supports per-request model override from the widget settings.
+ *
+ * The next provider is tried when this one can't serve the call (busy, down, unreachable, a
+ * bad or revoked key, no credit, or no such model) — not when the request itself is wrong
+ * (it would fail everywhere) and not after a timeout (the request may still be running and
+ * billing). The whole chain shares the call's time budget (`timeoutMs`): a fallback gets
+ * what is left, and none starts with less than a few seconds.
  */
 export function routerFromEnv(env: NodeJS.ProcessEnv = process.env): LLMProvider {
   const chain = buildChain(env);
@@ -78,21 +80,27 @@ export function routerFromEnv(env: NodeJS.ProcessEnv = process.env): LLMProvider
         }
         return targeted.complete({ ...input, model: undefined });
       }
-      const errors: string[] = [];
-      for (const p of chain) {
+      const budget = input.timeoutMs ?? llmTimeoutMs();
+      const deadline = Date.now() + budget;
+      const errors: unknown[] = [];
+      for (const [i, p] of chain.entries()) {
+        const remaining = deadline - Date.now();
+        if (i > 0 && remaining < MIN_FALLBACK_MS) break;
         try {
-          return await p.complete({ ...input, model: undefined });
+          return await p.complete({ ...input, model: undefined, timeoutMs: i === 0 ? budget : remaining });
         } catch (e) {
           // The caller gave up (Stop, or its deadline): don't start the same request elsewhere.
           if (input.signal?.aborted) throw e;
-          // A 4xx is a request/config problem (bad key, malformed body). Trying the next
-          // provider just wastes spend and hides the real cause — surface it immediately.
-          if (e instanceof HttpProviderError && e.isClientError) throw e;
-          errors.push(e instanceof Error ? e.message : String(e));
+          // A malformed or too-large request fails the same on every provider: say so now
+          // instead of paying for it twice.
+          if (e instanceof HttpProviderError && e.isClientError && !isProviderSpecific(e)) throw e;
+          errors.push(e);
+          // Timed out: the request may have landed and still be generating (and billing).
+          if (isTimeout(e)) break;
         }
       }
-      // Every provider failed transiently — surface all causes, not just the last.
-      throw new Error(`All LLM providers failed: ${errors.join(" | ")}`);
+      // Every provider tried has failed — surface all causes, not just the last.
+      throw new AllProvidersFailedError(errors);
     },
   };
 }
@@ -101,11 +109,9 @@ function buildChain(env: NodeJS.ProcessEnv): LLMProvider[] {
   const chain: LLMProvider[] = [];
   if (env.ANTHROPIC_API_KEY) chain.push(anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model: env.PA_ANTHROPIC_MODEL }));
   if (env.OPENAI_API_KEY) chain.push(openaiProvider({ apiKey: env.OPENAI_API_KEY, model: env.PA_OPENAI_MODEL }));
-  if (env.OPENROUTER_API_KEY) chain.push(openRouterProvider(env.OPENROUTER_API_KEY, env.PA_OPENROUTER_MODEL ?? "anthropic/claude-3.5-haiku"));
+  if (env.OPENROUTER_API_KEY) chain.push(openRouterProvider(env.OPENROUTER_API_KEY, env.PA_OPENROUTER_MODEL ?? MODEL_DEFAULTS.openrouter));
   return chain;
 }
-
-const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 /**
  * OpenRouter speaks both formats. Its Claude models go through the Anthropic-format endpoint
@@ -113,7 +119,7 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
  * temperature and forced tool_choice apply; every other model uses chat completions.
  */
 function openRouterProvider(apiKey: string, model: string): LLMProvider {
-  if (/^~?anthropic\//i.test(model.trim())) return anthropicProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, auth: "bearer", model });
+  if (claudeIdFromOpenRouter(model)) return anthropicProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, auth: "bearer", model });
   return openaiProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, model });
 }
 
@@ -132,4 +138,9 @@ function providerForModel(model: string, env: NodeJS.ProcessEnv): LLMProvider | 
     return anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model });
   }
   return null;
+}
+
+function isTimeout(e: unknown): boolean {
+  const msg = (e instanceof Error ? `${e.name} ${e.message}` : String(e)).toLowerCase();
+  return /timeouterror|timed? ?out|aborted due to timeout/.test(msg);
 }

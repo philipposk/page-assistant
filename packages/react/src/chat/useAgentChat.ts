@@ -1,3 +1,5 @@
+"use client";
+
 // The dock's state: the conversation, a turn in flight, the confirm card, follow-up chips and
 // saved chats. Headless: build your own UI on it, or use <AgentDock>.
 
@@ -23,12 +25,21 @@ import {
 export const DOCK_CAPABILITIES = ["pending_action", "result_cards", "guided"];
 
 export interface UseAgentChatOptions extends AgentTransport {
-  /** The page as data for the model. Default: path and title, plus `getPageState()`. */
+  /**
+   * The page as data for the model. Default: path (no query string) and title, plus
+   * `getPageState()`. Return `untrusted: true` when the page shows text someone else wrote.
+   */
   getPage?: () => AgentPage;
   /** Host view state (selected rows, open item). Ignored when `getPage` is given. */
   getPageState?: () => Record<string, unknown> | undefined;
   /** Saved chats. null = none (this visit only). */
   history?: ChatHistoryAdapter | null;
+  /**
+   * Who the saved chats belong to (the signed-in user's id). When it changes the chat is reset
+   * and the list is read again, so one person never sees another's conversation. Without it
+   * the list is read once, not on every new `history` object.
+   */
+  historyKey?: string | null;
   /** Server-Sent Events with progress. Default true. */
   stream?: boolean;
   /** Called with every reply, after it is shown (the dock runs its UI actions here). */
@@ -49,7 +60,8 @@ function defaultPage(getState?: () => Record<string, unknown> | undefined): Agen
     state = undefined;
   }
   return {
-    path: window.location.pathname + window.location.search,
+    // The query string can hold tokens and search terms; the model gets the route only.
+    path: window.location.pathname,
     title: typeof document !== "undefined" ? document.title : undefined,
     ...(state ? { state } : {}),
   };
@@ -74,6 +86,9 @@ export function useAgentChat(opts: UseAgentChatOptions) {
   const createdAt = useRef(new Date().toISOString());
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
+  // Bumped by every new or reset chat. A reply that belongs to an older one is dropped.
+  const generation = useRef(0);
+  const listSeq = useRef(0);
 
   const setAll = (next: ChatLine[]) => {
     linesRef.current = next;
@@ -105,17 +120,26 @@ export function useAgentChat(opts: UseAgentChatOptions) {
 
   const refreshChats = useCallback(async () => {
     const adapter = ref.current.history;
+    const seq = ++listSeq.current;
     if (!adapter) return setChats([]);
     try {
-      setChats(await adapter.list());
+      const list = await adapter.list();
+      if (seq === listSeq.current) setChats(list); // not a list from before a reset
     } catch {
-      setChats([]);
+      if (seq === listSeq.current) setChats([]);
     }
   }, []);
 
+  // Keyed on whether there is an adapter and whose it is, not on the object: a host that builds
+  // a new adapter every render would otherwise re-list (and re-run retention) on each one.
+  const historyKey = useRef(opts.historyKey);
   useEffect(() => {
+    if (historyKey.current !== opts.historyKey) {
+      historyKey.current = opts.historyKey;
+      reset();
+    }
     void refreshChats();
-  }, [opts.history, refreshChats]);
+  }, [!!opts.history, opts.historyKey]);
 
   const finishTurn = (reply: AgentTurnResponse, retryMessage?: string, suggestionTool?: string) => {
     if (isFailureReply(reply)) {
@@ -165,6 +189,7 @@ export function useAgentChat(opts: UseAgentChatOptions) {
     setStatus({ phase: "thinking" });
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const mine = generation.current;
     try {
       const reply = await postTurn(
         ref.current,
@@ -176,11 +201,13 @@ export function useAgentChat(opts: UseAgentChatOptions) {
           chatId: chatIdRef.current,
           ...(sendOpts.suggestionTool ? { suggestionTool: sendOpts.suggestionTool } : {}),
         },
-        { signal: ctrl.signal, stream: ref.current.stream !== false, onStatus: setStatus }
+        { signal: ctrl.signal, stream: ref.current.stream !== false, onStatus: (s) => mine === generation.current && setStatus(s) }
       );
+      if (mine !== generation.current) return null; // the chat was replaced while this ran
       finishTurn(reply, message, sendOpts.suggestionTool);
       return null;
     } catch (err) {
+      if (mine !== generation.current) return null;
       const aborted = ctrl.signal.aborted;
       const failure = aborted ? STOPPED_FAILURE : failureFromError(err);
       let base = linesRef.current;
@@ -198,10 +225,12 @@ export function useAgentChat(opts: UseAgentChatOptions) {
       ]);
       return failure.rollback ? text : null;
     } finally {
-      busyRef.current = false;
-      setBusy(false);
-      setStatus(null);
-      abortRef.current = null;
+      if (mine === generation.current) {
+        busyRef.current = false;
+        setBusy(false);
+        setStatus(null);
+        abortRef.current = null;
+      }
     }
   }, []);
 
@@ -212,17 +241,21 @@ export function useAgentChat(opts: UseAgentChatOptions) {
     busyRef.current = true;
     setBusy(true);
     setStatus({ phase: "tool" });
+    const mine = generation.current;
     try {
       const reply = await postTurn(ref.current, { message: "", confirmToken: card.token, page: page(), clientCapabilities: caps(), chatId: chatIdRef.current }, { stream: false });
+      if (mine !== generation.current) return;
       setPendingAction(null);
       finishTurn(reply);
     } catch (err) {
-      append({ id: newId(), role: "assistant", kind: "error", content: failureFromError(err).content });
+      if (mine === generation.current) append({ id: newId(), role: "assistant", kind: "error", content: failureFromError(err).content });
       throw err;
     } finally {
-      busyRef.current = false;
-      setBusy(false);
-      setStatus(null);
+      if (mine === generation.current) {
+        busyRef.current = false;
+        setBusy(false);
+        setStatus(null);
+      }
     }
   }, [pendingAction]);
 
@@ -255,13 +288,26 @@ export function useAgentChat(opts: UseAgentChatOptions) {
   }, []);
 
   const newChat = useCallback(() => {
+    generation.current++; // whatever is still in flight belongs to the chat being left
     abortRef.current?.abort();
+    abortRef.current = null;
+    busyRef.current = false;
+    setBusy(false);
+    setStatus(null);
     setAll([]);
     setPendingAction(null);
     setSuggestions([]);
     setChatId(newId());
     createdAt.current = new Date().toISOString();
   }, []);
+
+  /** A new chat that also forgets the saved-chat list: the account behind it changed. */
+  function reset() {
+    newChat();
+    listSeq.current++;
+    setChats([]);
+    setSaveFailed(false);
+  }
 
   const openChat = useCallback(async (id: string) => {
     const adapter = ref.current.history;

@@ -4,8 +4,9 @@
 //   import { supabaseChatHistoryAdapter } from "@page-assistant/react";
 //   <AgentDock history={supabaseChatHistoryAdapter(supabase, { app: "recall" })} ... />
 //
-// Without an adapter the dock keeps chats on this device (localStorage), per signed-in user
-// when `userId` is given.
+// Without an adapter the dock keeps chats on this device (localStorage), under the signed-in
+// user's `userId`. With no `userId` it keeps none: one shared slot would hand a chat to
+// whoever signs in next on the same browser.
 
 import type { AccountChat, AccountChatSummary, ChatHistoryAdapter } from "@page-assistant/widget";
 

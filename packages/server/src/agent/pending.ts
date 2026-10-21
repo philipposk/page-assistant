@@ -95,6 +95,11 @@ export function newToken(): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/** Shaped like a token newToken() makes (base64url of 32 bytes). Says nothing about whether it is live. */
+export function isTokenShaped(token: unknown): token is string {
+  return typeof token === "string" && /^[A-Za-z0-9_-]{43}$/.test(token);
+}
+
 /** SHA-256 hex of a token: the only form a store ever sees. */
 export async function hashToken(token: string): Promise<string> {
   const digest = await webCrypto().subtle.digest("SHA-256", new TextEncoder().encode(token));

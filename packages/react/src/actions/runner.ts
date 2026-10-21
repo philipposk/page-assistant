@@ -12,8 +12,8 @@
 
 import type { UiAction, UiActionMode } from "../protocol.js";
 import { waitForAnchor as defaultWaitForAnchor } from "./anchors.js";
-import { clearPendingPaActions, emitPaAction } from "./events.js";
-import { isSafeNavigationPath } from "./safeNavigate.js";
+import { dropPendingPaAction, emitPaAction } from "./events.js";
+import { normalizeNavigationPath } from "./safeNavigate.js";
 
 export interface HighlightTarget {
   element: HTMLElement;
@@ -36,7 +36,7 @@ export interface ActionRunnerDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Pause between guided beats when the script has no explicit wait. Default 450 ms. */
   beatMs?: number;
-  /** How long the last ring stays up after a guided run. Default 2500 ms. */
+  /** How long the last ring stays up after a run (guided or not). Default 2500 ms. */
   lingerMs?: number;
 }
 
@@ -54,12 +54,18 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
   const emit = deps.emit ?? ((type: string, detail: unknown) => emitPaAction(type, detail));
   // Bumping this cancels an in-flight sequence: each beat checks its run is still current.
   let runId = 0;
+  // Whether the current run put a ring up, so a run that never did has nothing to clear later.
+  let lit = false;
+  // What this runner put on the event bus. Cancelling drops only these, never another
+  // component's buffered action.
+  let owned: Array<{ type: string; detail: unknown }> = [];
 
   async function applyOne(action: UiAction, guided: boolean): Promise<void> {
     switch (action.type) {
       case "navigate": {
-        const to = (action as { to?: unknown }).to;
-        if (isSafeNavigationPath(to)) deps.navigate(to.trim());
+        // Follow the resolved path, not the text the model wrote.
+        const to = normalizeNavigationPath((action as { to?: unknown }).to);
+        if (to) deps.navigate(to);
         return;
       }
       case "narrate": {
@@ -81,6 +87,7 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
         } catch {
           /* old engines */
         }
+        lit = true;
         deps.setHighlight({ element: el, label: typeof a.label === "string" ? a.label : null });
         return;
       }
@@ -96,6 +103,7 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
           return;
         }
         const { type, ...detail } = action;
+        owned = [...owned.slice(-49), { type, detail }];
         emit(type, detail);
       }
     }
@@ -106,6 +114,16 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
       if (!actions?.length) return;
       const guided = mode === "guided";
       const mine = ++runId;
+      // A new answer starts with a clean page: the last ring is about the last answer.
+      lit = false;
+      deps.setHighlight(null);
+      // The ring a run leaves behind fades after a moment, so it never outstays the answer.
+      const fade = () => {
+        if (!lit) return;
+        setTimeout(() => {
+          if (runId === mine) deps.setHighlight(null);
+        }, deps.lingerMs ?? 2500);
+      };
       if (!guided) {
         for (const action of actions) {
           if (runId !== mine) return;
@@ -115,6 +133,7 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
             /* one bad action never stops the rest */
           }
         }
+        if (runId === mine) fade();
         return;
       }
       deps.setRunning?.(true);
@@ -131,9 +150,7 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
       } finally {
         if (runId === mine) {
           deps.setRunning?.(false);
-          setTimeout(() => {
-            if (runId === mine) deps.setHighlight(null);
-          }, deps.lingerMs ?? 2500);
+          fade();
         }
       }
     },
@@ -141,7 +158,8 @@ export function createActionRunner(deps: ActionRunnerDeps): ActionRunner {
       runId++;
       deps.setHighlight(null);
       deps.setRunning?.(false);
-      clearPendingPaActions();
+      for (const o of owned) dropPendingPaAction(o.type, o.detail);
+      owned = [];
     },
   };
 }

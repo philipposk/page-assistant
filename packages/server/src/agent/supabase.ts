@@ -16,8 +16,11 @@ export interface SupabaseLikeClient {
 export interface SupabasePendingActionOptions {
   /** Default "assistant_pending_actions". */
   table?: string;
-  /** Keeps apps that share one table apart. Default "". */
-  app?: string;
+  /**
+   * Keeps apps that share one table apart: a card made in one app can't be confirmed in
+   * another. Required, so two apps can't both fall back to the same empty name.
+   */
+  app: string;
 }
 
 interface Row {
@@ -43,9 +46,10 @@ const fromRow = (r: Row): PendingActionRecord => ({
   expiresAt: r.expires_at,
 });
 
-export function supabasePendingActionStore(client: SupabaseLikeClient, opts: SupabasePendingActionOptions = {}): PendingActionStore {
-  const table = opts.table ?? "assistant_pending_actions";
-  const app = opts.app ?? "";
+export function supabasePendingActionStore(client: SupabaseLikeClient, opts: SupabasePendingActionOptions): PendingActionStore {
+  const table = opts?.table ?? "assistant_pending_actions";
+  const app = typeof opts?.app === "string" ? opts.app.trim() : "";
+  if (!app) throw new Error('supabasePendingActionStore: pass { app: "<your app name>" } so apps sharing the table stay apart.');
   const run = async <T>(q: PromiseLike<{ data: T; error: unknown }>): Promise<T> => {
     const { data, error } = await q;
     if (error) throw new Error(`pending actions: ${(error as { message?: string }).message ?? String(error)}`);

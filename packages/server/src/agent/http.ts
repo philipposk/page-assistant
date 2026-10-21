@@ -39,7 +39,9 @@ export async function readLimited(req: Request, max: number): Promise<Uint8Array
  */
 export function crossSiteRefusal(req: Request, corsOrigin?: string): string | null {
   const origin = req.headers.get("origin");
-  const allowedOrigin = !!corsOrigin && (corsOrigin === "*" || origin === corsOrigin);
+  // Only a named origin vouches for a cross-site caller. "*" never does: it would let any page
+  // (a sibling subdomain sends the user's Lax cookies) drive the assistant as the user.
+  const allowedOrigin = !!corsOrigin && corsOrigin !== "*" && origin === corsOrigin;
   const site = req.headers.get("sec-fetch-site");
   if (site) {
     if (site === "same-origin" || site === "none" || allowedOrigin) return null;
@@ -54,6 +56,16 @@ export function crossSiteRefusal(req: Request, corsOrigin?: string): string | nu
   }
   const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? safeHost(req.url);
   return originHost === host ? null : "Requests from other sites are not allowed.";
+}
+
+/**
+ * The request's media type is exactly `application/json` (parameters like charset allowed).
+ * A substring check would pass `text/plain; x=application/json`, which a page may send
+ * cross-site without a preflight.
+ */
+export function isJsonRequest(req: Request): boolean {
+  const type = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  return type === "application/json";
 }
 
 function safeHost(url: string): string {

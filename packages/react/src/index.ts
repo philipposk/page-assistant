@@ -19,15 +19,15 @@ export { postTurn, readEvents, fetchIntro, normaliseReply, AgentRequestError } f
 export type { AgentTransport, PostTurnOptions } from "./chat/client.js";
 export { localChatHistory, supabaseChatHistoryAdapter } from "./chat/history.js";
 export type { ChatHistoryAdapter, AccountChat, AccountChatSummary, SupabaseChatHistoryOptions, SupabaseClientLike } from "./chat/history.js";
-export { toHistoryTurns, toSavable, linesFromSaved, failureFromError, retryForReply, isFailureReply } from "./chat/lines.js";
+export { toHistoryTurns, toSavable, MAX_HISTORY_TURNS, MAX_HISTORY_BYTES, linesFromSaved, failureFromError, retryForReply, isFailureReply } from "./chat/lines.js";
 export type { ChatLine, ChatLineRetry } from "./chat/lines.js";
 
 export { createActionRunner } from "./actions/runner.js";
 export type { ActionRunner, ActionRunnerDeps, HighlightTarget, UiActionHandler } from "./actions/runner.js";
 export { useActionRunner } from "./actions/useActionRunner.js";
 export { HighlightOverlay } from "./actions/HighlightOverlay.js";
-export { emitPaAction, onPaAction, usePaAction, clearPendingPaActions, REPLAY_WINDOW_MS } from "./actions/events.js";
+export { emitPaAction, onPaAction, usePaAction, clearPendingPaActions, dropPendingPaAction, REPLAY_WINDOW_MS } from "./actions/events.js";
 export { paAnchor, resolveAnchor, waitForAnchor, isAnchorName } from "./actions/anchors.js";
-export { isSafeInAppPath, isSafeNavigationPath, isExternalHttpUrl } from "./actions/safeNavigate.js";
+export { isSafeInAppPath, isSafeNavigationPath, normalizeNavigationPath, isExternalHttpUrl } from "./actions/safeNavigate.js";
 
 export * from "./protocol.js";

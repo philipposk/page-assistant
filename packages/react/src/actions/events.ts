@@ -1,3 +1,5 @@
+"use client";
+
 // Cross-component bus for the assistant's custom UI actions (select rows, open a panel...).
 //
 // Window CustomEvents, so the page component that owns the state listens without a store.
@@ -27,9 +29,17 @@ export function emitPaAction<T = unknown>(type: string, detail: T, now: number =
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent<T>(paEventName(type), { detail }));
 }
 
-/** Drop buffered actions without running them (a cancelled walkthrough). */
+/** Drop every buffered action without running it. */
 export function clearPendingPaActions(): void {
   pending.clear();
+}
+
+/**
+ * Drop one buffered action, only if it is still the very emission `detail` came from. A
+ * cancelled walkthrough drops what it emitted and leaves anything else on the bus alone.
+ */
+export function dropPendingPaAction(type: string, detail: unknown): void {
+  if (pending.get(type)?.detail === detail) pending.delete(type);
 }
 
 /**

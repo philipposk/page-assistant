@@ -2,7 +2,11 @@ node_modules
 **/node_modules
 dist
 **/dist
-*.tsbuildinfo
+# Every package's tsc cache, not only the root's: with dist/ left out, a copied cache makes tsc
+# think its output is current and skip writing the .d.ts files the next package needs.
+**/*.tsbuildinfo
+**/.next
+.claude
 .git
 .github
 .env

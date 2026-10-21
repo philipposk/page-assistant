@@ -1,11 +1,14 @@
+"use client";
+
 // A small, safe markdown renderer for replies: paragraphs, line breaks, lists, rules,
 // headings (as bold lines), **bold**, *italic*, `code` and links. No HTML is ever parsed or
 // injected — everything becomes React text nodes — so a reply cannot carry markup or script.
-// Links: http(s) open in a new tab; in-app paths go through the host's router; anything
+// Links: http(s) open in a new tab and show their host; in-app paths go through the host's
+// router, and only paths a `navigate` action may follow (no API routes, no sign-out); anything
 // else (javascript:, data:, mailto:) is shown as plain text.
 
 import { Fragment, memo, type ReactNode } from "react";
-import { isExternalHttpUrl, isSafeInAppPath } from "../actions/safeNavigate.js";
+import { isExternalHttpUrl, normalizeNavigationPath } from "../actions/safeNavigate.js";
 
 export interface MarkdownProps {
   text: string;
@@ -88,10 +91,36 @@ export function parseBlocks(text: string): Block[] {
 // Inline tokens: escapes, code, links, bold, italic. A link label can't contain a bracket and
 // every part is bounded, so a reply full of "[" or "[](" renders in linear time.
 const INLINE_RE = /\\([\\`*_{}[\]()#+\-.!<>|~])|`([^`\n]{1,2000})`|\[([^\][\n]{0,500})\]\(\s{0,10}([^)\s]{0,2048})(?:\s{1,10}"[^"\n]{0,300}")?\s{0,10}\)|\*\*([^*\n]{1,2000})\*\*|__([^_\n]{1,2000})__|\*([^*\s][^*\n]{0,2000})\*|(?<![\w])_([^_\s][^_\n]{0,2000})_(?![\w])/g;
+// The same link shape and the same "not a link" rule as the server's cleaner (text.ts). An
+// address holding any of these characters can hide a second link inside the first, which only
+// one of the two readers would see (`\[a](/x[b](https://evil/?d=…)`), so such a "link" is
+// shown as its label and nothing else, before anything else is read.
+const LINK_RE = /\[([^\][\n]{0,500})\]\(\s{0,10}([^)\s]{0,2048})(?:\s{1,10}"[^"\n]{0,300}")?\s{0,10}\)/g;
+const HREF_MARKUP = /[[\]()`*<>\\"'\s]/;
+
+/**
+ * `text` with every link whose address holds markup replaced by its label. Repeated until
+ * nothing changes (dropping one can leave `[` + label + `](…)` side by side, which is a new
+ * link); text that keeps changing loses its brackets.
+ */
+function dropMarkupLinks(text: string): string {
+  let current = text;
+  for (let pass = 0; pass < 5; pass++) {
+    const next = current.replace(LINK_RE, (m, label: string, href: string) => (HREF_MARKUP.test(href) ? label : m));
+    if (next === current) return next;
+    current = next;
+  }
+  return current.replace(/[[\]]/g, "");
+}
+
 /** Longest text rendered; a longer reply is cut (the server never sends one this long). */
 export const MAX_RENDER_CHARS = 40_000;
 
 export function renderInline(text: string, onNavigate?: (path: string) => void, keyBase = "i"): ReactNode[] {
+  return inline(dropMarkupLinks(text), onNavigate, keyBase);
+}
+
+function inline(text: string, onNavigate: ((path: string) => void) | undefined, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   let n = 0;
@@ -104,8 +133,8 @@ export function renderInline(text: string, onNavigate?: (path: string) => void, 
     if (m[1] !== undefined) out.push(m[1]);
     else if (m[2] !== undefined) out.push(<code key={key}>{m[2]}</code>);
     else if (m[3] !== undefined) out.push(link(m[3], m[4] ?? "", key, onNavigate));
-    else if (m[5] !== undefined || m[6] !== undefined) out.push(<strong key={key}>{renderInline(m[5] ?? m[6], onNavigate, key)}</strong>);
-    else if (m[7] !== undefined || m[8] !== undefined) out.push(<em key={key}>{renderInline(m[7] ?? m[8], onNavigate, key)}</em>);
+    else if (m[5] !== undefined || m[6] !== undefined) out.push(<strong key={key}>{inline(m[5] ?? m[6], onNavigate, key)}</strong>);
+    else if (m[7] !== undefined || m[8] !== undefined) out.push(<em key={key}>{inline(m[7] ?? m[8], onNavigate, key)}</em>);
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push(text.slice(last));
@@ -113,29 +142,36 @@ export function renderInline(text: string, onNavigate?: (path: string) => void, 
 }
 
 function link(label: string, href: string, key: string, onNavigate?: (path: string) => void): ReactNode {
-  const children = renderInline(label || href, onNavigate, key);
-  // Guards take `unknown`; a copy keeps them from narrowing `href` itself to never.
-  const target: unknown = href;
-  if (isSafeInAppPath(target)) {
+  const children = inline(label || href, onNavigate, key);
+  if (HREF_MARKUP.test(href)) return <Fragment key={key}>{children}</Fragment>;
+  // The resolved path is what the link goes to, the same as a `navigate` action: no API
+  // route, no sign-out, nothing that only reads as in-app.
+  const path = normalizeNavigationPath(href);
+  if (path) {
     return (
       <a
         key={key}
-        href={href}
+        href={path}
         onClick={(e) => {
           if (!onNavigate || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
           e.preventDefault();
-          onNavigate(href.trim());
+          onNavigate(path);
         }}
       >
         {children}
       </a>
     );
   }
-  if (isExternalHttpUrl(target)) {
+  if (isExternalHttpUrl(href)) {
+    // The host is always shown, so a friendly label can't hide where the link goes.
+    const url = new URL(href.trim());
     return (
-      <a key={key} href={href.trim()} target="_blank" rel="noopener noreferrer nofollow">
-        {children}
-      </a>
+      <Fragment key={key}>
+        <a href={url.href} target="_blank" rel="noopener noreferrer nofollow" title={url.href}>
+          {children}
+        </a>{" "}
+        <span className="pa-agent-md-host">({url.host})</span>
+      </Fragment>
     );
   }
   return <Fragment key={key}>{children}</Fragment>;

@@ -44,14 +44,38 @@ export function isSafeInAppPath(to: unknown): to is string {
   return path.length <= 2048;
 }
 
+const NAV_BASE = "http://in-app.invalid";
+
 /**
- * Where a `navigate` action may go: an in-app path that is not an API route. Navigation happens
- * without a click, so it must never land on a GET with side effects (`/api/...`, sign-out).
+ * A `navigate` target, normalised, or null when it may not be followed. Navigation happens
+ * without a click, so it must never land on a GET with side effects: an API route or a
+ * sign-out. The path is resolved first (`/notes/../api/x`, `/./logout`, `/%2e/api/x` all point
+ * somewhere else than they read), and the result is what gets followed.
  */
+export function normalizeNavigationPath(to: unknown): string | null {
+  if (!isSafeInAppPath(to)) return null;
+  let url: URL;
+  try {
+    url = new URL(to.trim(), NAV_BASE);
+  } catch {
+    return null;
+  }
+  if (url.origin !== NAV_BASE) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname).toLowerCase();
+  } catch {
+    return null;
+  }
+  // An encoded slash or dot segment that only a decoding server would resolve.
+  if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(decoded) || decoded.includes("\\")) return null;
+  if (/^\/+api(?:\/|$)/.test(decoded)) return null;
+  if (/(?:^|\/)(?:sign[-_]?out|log[-_]?out|log[-_]?off|sign[-_]?off)(?:\/|$|\.)/.test(decoded)) return null;
+  return url.pathname + url.search + url.hash;
+}
+
 export function isSafeNavigationPath(to: unknown): to is string {
-  if (!isSafeInAppPath(to)) return false;
-  const path = to.trim().toLowerCase();
-  return !/^\/+api(?:[/?#]|$)/.test(path) && !/^\/+(?:auth\/)?(?:sign-?out|log-?out)(?:[/?#]|$)/.test(path);
+  return normalizeNavigationPath(to) !== null;
 }
 
 export interface UiActionRules {
@@ -81,7 +105,10 @@ function coerceOne(item: unknown, rules: UiActionRules): UiAction | null {
   const type = typeof a.type === "string" ? a.type : "";
   switch (type) {
     case "navigate":
-      return isSafeNavigationPath(a.to) ? { type, to: a.to.trim() } : null;
+      {
+        const to = normalizeNavigationPath(a.to);
+        return to ? { type, to } : null;
+      }
     case "narrate": {
       if (typeof a.text !== "string" || !a.text.trim()) return null;
       const action: UiAction = { type, text: a.text.slice(0, 2000) };

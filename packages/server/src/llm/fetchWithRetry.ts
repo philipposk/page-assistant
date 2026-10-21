@@ -30,7 +30,8 @@ export async function fetchWithRetry(
       // Retry ONLY a genuine connection error, and only if we have attempts left. A timeout
       // (the request may have landed and be billing) or any other error is surfaced as-is.
       if (attempt < retries && isRetryableConnectionError(e) && !opts.signal?.aborted) {
-        await new Promise((r) => setTimeout(r, backoff * (attempt + 1)));
+        await pause(backoff * (attempt + 1), opts.signal);
+        if (opts.signal?.aborted) break;
         continue;
       }
       break;
@@ -38,6 +39,20 @@ export async function fetchWithRetry(
   }
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr);
   throw new Error(`network error: ${reason}`);
+}
+
+/** Waits `ms`, or less when `signal` fires: Stop must not wait out a backoff. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**

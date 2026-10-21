@@ -29,6 +29,11 @@ export interface AgentPage {
   title?: string;
   /** Host-provided structured view state (selected rows, open item, filters). */
   state?: Record<string, unknown>;
+  /**
+   * The page shows text someone else wrote (a shared document, another user's message), so this
+   * turn is tainted from the start: writes need a card. Set it from `getPage` in the dock.
+   */
+  untrusted?: boolean;
 }
 
 /** One earlier line of the conversation, as the client sends it. */
@@ -300,15 +305,30 @@ export interface AgentConfig<C = unknown> {
   anchors?: Array<string | { name: string; description?: string }>;
   /** Extra view-only UI action types tools may emit. */
   uiActions?: Record<string, CustomUiActionSpec>;
+  /**
+   * "untrusted": the page's title and state can hold someone else's text, so a turn sent from a
+   * page with either is tainted. Default "trusted" (per page, the client can still send
+   * `page.untrusted`). The query string never reaches the model either way.
+   */
+  pageContext?: "trusted" | "untrusted";
   /** Messages answered with a fixed refusal before the model (e.g. payments, deleting the account). */
   refusals?: Array<{ match: RegExp; message: string }>;
   /** Reply scrub rules. Default core DEFAULT_SCRUB_RULES; false turns it off. */
   scrub?: ScrubRule[] | false;
-  /** LLM provider. Default: the env router (Anthropic → OpenAI → OpenRouter). */
+  /**
+   * LLM provider. Default: the env router (Anthropic → OpenAI → OpenRouter, each a fallback for
+   * the one before). Your own provider is called as it is: no router, no provider fallback.
+   */
   llm?: LLMProvider;
-  /** Model. Default PA_AGENT_MODEL, else "claude-haiku-5-5". */
+  /**
+   * Model. Default PA_AGENT_MODEL, else "claude-haiku-5-5" — or, with your own `llm`, no model
+   * at all (the provider picks its own).
+   */
   model?: string;
-  /** Used once for the rest of 10 minutes when the provider refuses `model`. Default "claude-haiku-4-5". */
+  /**
+   * Used for the rest of 10 minutes when the provider refuses `model`. Default
+   * "claude-haiku-4-5". Only applies when a model is set (`model` or PA_AGENT_MODEL).
+   */
   fallbackModel?: string;
   /** Where confirm cards wait. Default in-memory (single process only — use a shared store on serverless). */
   pendingActions?: import("./pending.js").PendingActionStore;

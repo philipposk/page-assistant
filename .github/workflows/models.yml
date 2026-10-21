@@ -1,0 +1,48 @@
+name: Model ids
+
+# Are the model ids page-assistant names (packages/core/src/models.ts) still served? Providers
+# retire models; a retired default fails every app's assistant at once. Weekly, and on any PR
+# that touches the list. A scheduled run that finds a problem opens (or updates) an issue.
+#
+# Checked against OpenRouter's public list without any key. Add ANTHROPIC_API_KEY and
+# OPENAI_API_KEY as repo secrets to check against the providers' own lists too (the speech
+# model can only be checked that way).
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packages/core/src/models.ts"
+      - "scripts/models/**"
+      - ".github/workflows/models.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build -w packages/core
+      - id: check
+        run: |
+          set -o pipefail
+          node scripts/models/check.mjs | tee check.txt
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - if: failure() && steps.check.outcome == 'failure' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="A model id page-assistant uses is retired or about to be"
+          body=$(printf '%s\n\n%s\n\n%s' "The weekly model check found ids to replace in \`packages/core/src/models.ts\`:" "$(cat check.txt)" "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body "$body"; else gh issue create --title "$title" --body "$body"; fi

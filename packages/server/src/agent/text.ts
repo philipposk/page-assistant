@@ -36,6 +36,9 @@ export const UNVERIFIED_NUMBERS_MESSAGE =
 export const CONFIRM_EXPIRED_MESSAGE =
   "That confirmation has expired or was already used, so nothing ran. Ask me again if you still want it.";
 export const CONFIRM_GONE_MESSAGE = "That action can no longer be confirmed. Ask me again.";
+/** A tool that ran past the turn's deadline (or Stop). It may still finish on its own. */
+export const TOOL_TIMEOUT_MESSAGE =
+  "That took too long, so I stopped waiting. It may still finish — check before you try again.";
 export const CARD_MESSAGE = "This needs your OK. Confirm on the card below.";
 /** Said under every confirm card: a turn that asks a question runs nothing after it. */
 export const CARD_STOPS_THE_TURN =
@@ -167,8 +170,16 @@ function cleanPass(text: string, opts: CleanOptions): string {
   return s;
 }
 
+/**
+ * Characters a kept link's address may not contain. The client renderer reads `\`, backticks,
+ * `*` and brackets as markdown, so an address holding them can hide a second link inside the
+ * first that only the client would see (`[a](/x[b](https://evil/?d=…)`).
+ */
+const HREF_MARKUP = /[[\]()`*<>\\"'\s]/;
+
 function isSafeHref(href: string, opts: CleanOptions): boolean {
   const h = href.trim();
+  if (HREF_MARKUP.test(h)) return false;
   if (/^https?:\/\//i.test(h)) return !opts.keepUrls || opts.keepUrls.has(h);
   return h.startsWith("/") && !h.startsWith("//") && !h.includes("\\");
 }
@@ -181,6 +192,11 @@ export function urlsIn(value: unknown, out: Set<string> = new Set(), depth = 0):
   } else if (Array.isArray(value)) value.slice(0, 500).forEach((v) => urlsIn(v, out, depth + 1));
   else if (typeof value === "object") Object.values(value as Record<string, unknown>).slice(0, 500).forEach((v) => urlsIn(v, out, depth + 1));
   return out;
+}
+
+/** Without hidden characters: control characters, bidi overrides, zero-width characters. */
+export function stripHidden(text: string): string {
+  return String(text ?? "").replace(HIDDEN_CHARS, "");
 }
 
 function plainText(text: string): string {

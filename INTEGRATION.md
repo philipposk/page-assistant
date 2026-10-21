@@ -469,30 +469,36 @@ runs and the model request is cancelled; steps that already ran stay done.
 ### 9.4 Tools (the important part)
 
 ```ts
-import { defineTool } from "@page-assistant/server/agent";
+import { defineTool, type AgentTool } from "@page-assistant/server/agent";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-export const tools = [
-  defineTool({
+type Ctx = SupabaseClient;                          // what your route's `context()` returns → ctx.app
+type Chat = { id: string; title: string };
+const fail = (error: string) => ({ ok: false as const, error });
+
+// defineTool<Args, Result, Ctx>: the generics type `run`'s args, `render`'s result and `ctx.app`.
+export const tools: AgentTool<any, any, Ctx>[] = [
+  defineTool<{ limit?: number }, { ok: true; count: number; chats: Chat[] } | { ok: false; error: string }, Ctx>({
     name: "list_chats",
     description: "List the user's imported chats.",
     parameters: { type: "object", properties: { limit: { type: "integer" } } },
     async run({ limit }, ctx) {                       // ctx.app = Supabase client as the user
       const { data, error } = await ctx.app.from("chats").select("id,title").limit(limit ?? 10);
-      if (error) return { ok: false, error: "I couldn't read your chats." };
-      return { ok: true, count: data.length, chats: data };
+      if (error) return fail("I couldn't read your chats.");
+      return { ok: true, count: data.length, chats: data as Chat[] };
     },
     render: (r) => r.ok === false ? r.error : `You have **${r.count}** chats.`,  // the step's trusted answer
     factKeys: ["count"],
   }),
-  defineTool({
+  defineTool<{ id: string; label: string }, { ok: true; id: string; label: string } | { ok: false; error: string }, Ctx>({
     name: "label_chat", description: "Put a label on a chat.", risk: "write",
     parameters: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } }, required: ["id", "label"] },
     confirmWhenTainted: { title: "Label this chat?", where: "Open the chat and use Labels." },
     run: async ({ id, label }, ctx) => { /* update as the user */ return { ok: true, id, label }; },
-    render: (r) => `Labelled it **${r.label}**.`,
+    render: (r) => r.ok === false ? r.error : `Labelled it **${r.label}**.`,
     uiActions: (r) => [{ type: "highlight", anchor: "chats.list" }],
   }),
-  defineTool({
+  defineTool<{ id: string }, { ok: true } | { ok: false; error: string }, Ctx>({
     name: "delete_chat", description: "Delete an imported chat for good.", risk: "confirm",
     parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
     confirm: {
@@ -534,6 +540,7 @@ Custom view-only action types: `uiActions: { select_rows: { schema: { type: "obj
 ```ts
 // app/api/pa/voice/stt/route.ts   (and …/tts/route.ts with `.tts`)
 import { createVoiceRoutes } from "@page-assistant/server/next";
+import { currentUserId } from "@/lib/supabase/server";
 export const { POST } = createVoiceRoutes({ getUser: () => currentUserId() }).stt;
 ```
 
@@ -544,30 +551,42 @@ export const { POST } = createVoiceRoutes({ getUser: () => currentUserId() }).st
 import { AgentDock, supabaseChatHistoryAdapter, type ChatHistoryAdapter } from "@page-assistant/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { supabaseBrowser } from "@/lib/supabase/browser";
 
 export function Assistant() {
   const router = useRouter();
   const [history, setHistory] = useState<ChatHistoryAdapter | false>(false);
+  const [userId, setUserId] = useState<string | null>(null);
   // Browser-only: the Supabase browser client must not run during prerender.
-  useEffect(() => setHistory(supabaseChatHistoryAdapter(supabaseBrowser(), { app: "recall" })), []);
-  return <AgentDock endpoint="/api/pa/agent" navigate={(p) => router.push(p)} history={history} voice />;
+  useEffect(() => {
+    const supabase = supabaseBrowser();
+    setHistory(supabaseChatHistoryAdapter(supabase, { app: "recall" }));
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => setUserId(session?.user.id ?? null));
+    return () => data.subscription.unsubscribe();
+  }, []);
+  return <AgentDock endpoint="/api/pa/agent" navigate={(p) => router.push(p)} history={history} userId={userId} voice />;
 }
 ```
 
+`userId` is the signed-in user's id (from your auth state). When it changes the dock clears
+the open chat, so the next person on the same browser never sees it.
+
 Mark the places it may point at: `<ul {...paAnchor("chats.list")}>`. Listen for your own
-action types where the state lives: `usePaAction("select_rows", ({ ids }) => setSelected(ids))`
+action types where the state lives: `usePaAction<{ ids: string[] }>("select_rows", ({ ids }) => setSelected(ids))`
 (an action emitted just before the page mounted is replayed, so navigate-then-select works).
-Other props: `getPageState` (the view as data for the model), `actions` (handlers by type),
+Other props: `getPageState` (the view as data for the model; or `getPage` for the whole page
+object — return `untrusted: true` from it when the page shows text someone else wrote, and the
+turn is guarded as if a `taints` tool had run), `actions` (handlers by type),
 `renderCard`, `theme`, `accentColor`, `position`, `title`, `intro`, `suggestions`,
 `stream` (default true: progress over Server-Sent Events). Without `history` chats stay on the
-device; `history={false}` keeps none. Building your own UI: `useAgentChat`, `useActionRunner`,
+device, per `userId` (with no `userId` none are kept); `history={false}` keeps none. Building your own UI: `useAgentChat`, `useActionRunner`,
 `HighlightOverlay` and `PendingActionCard` are all exported.
 
 ### 9.7 Limits and settings
 
 | Setting | Default | Env |
 |---|---|---|
-| Model | `claude-haiku-5-5`, then the router's OpenAI / OpenRouter fallback when Anthropic is busy | `PA_AGENT_MODEL` |
+| Model | `claude-haiku-5-5`, then the router's OpenAI / OpenRouter fallback when Anthropic is busy, down, refuses the key, is out of credit or no longer has the model | `PA_AGENT_MODEL` |
 | Fallback when the provider refuses the model (404, no access) | `claude-haiku-4-5`, remembered 10 min | `PA_AGENT_FALLBACK_MODEL` |
 | Tool rounds per turn | 8 | `limits.maxRounds` |
 | One model call / whole turn | 25 s / 50 s | `PA_AGENT_CALL_TIMEOUT_MS` / `PA_AGENT_TURN_DEADLINE_MS` |

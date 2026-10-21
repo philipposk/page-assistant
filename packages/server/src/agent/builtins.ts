@@ -7,6 +7,8 @@ import type { AgentConfig, AgentTool } from "./types.js";
 export const OPEN_PAGE_TOOL = "open_page";
 export const POINT_AT_TOOL = "point_at";
 export const WALKTHROUGH_TOOL = "start_walkthrough";
+/** Built-ins echo their arguments; nothing they return vouches for a link. */
+export const BUILTIN_TOOLS: ReadonlySet<string> = new Set([OPEN_PAGE_TOOL, POINT_AT_TOOL, WALKTHROUGH_TOOL]);
 
 export function builtinTools<C>(config: AgentConfig<C>, rules: UiActionRules): AgentTool<any, any, C>[] {
   const tools: AgentTool<any, any, C>[] = [];

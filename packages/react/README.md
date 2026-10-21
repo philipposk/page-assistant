@@ -22,9 +22,20 @@ import { useRouter } from "next/navigation";
 
 export function Assistant() {
   const router = useRouter();
-  return <AgentDock endpoint="/api/pa/agent" navigate={(p) => router.push(p)} voice />;
+  // Pass the signed-in user's id: it keys device-saved chats, and a different id clears the open chat.
+  return <AgentDock endpoint="/api/pa/agent" navigate={(p) => router.push(p)} userId={user.id} voice />;
 }
 ```
+
+- **Saved chats need `userId`** (or your own `history` adapter). Without either, nothing is saved:
+  one shared slot would show a chat to whoever signs in next on that browser.
+- **Server components:** the main entry holds client code. To mark an element from a layout or
+  page, import the pure helper from the server-safe entry:
+  `import { paAnchor } from "@page-assistant/react/anchors"`.
+- **Page context:** the model gets the route (`location.pathname`, never the query string) and the
+  title. Give `getPage` and return `untrusted: true` when the page shows text someone else wrote.
+- **Links** in replies follow the same rules as a `navigate` action (no API routes, no sign-out),
+  and an external link always shows its host.
 
 Server side, setup and every option: [INTEGRATION.md §9](https://github.com/philipposk/page-assistant/blob/main/INTEGRATION.md#9-agent-mode-server-side-tool-loop--react-dock).
 Runnable example: [`examples/next-agent`](https://github.com/philipposk/page-assistant/tree/main/examples/next-agent).

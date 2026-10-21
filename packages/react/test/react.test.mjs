@@ -14,6 +14,7 @@ import {
   isSafeInAppPath,
   isSafeNavigationPath,
   isExternalHttpUrl,
+  normalizeNavigationPath,
   normaliseReply,
   readEvents,
   postTurn,
@@ -31,7 +32,10 @@ import {
   speakableText,
   paAnchor,
   isAnchorName,
+  MAX_HISTORY_TURNS,
+  MAX_HISTORY_BYTES,
 } from "../dist/index.js";
+import * as anchorsEntry from "../dist/anchors.js";
 
 // --- navigation safety -------------------------------------------------------------------------
 
@@ -119,6 +123,7 @@ test("immediate mode applies everything, drops off-site navigation, routes custo
     { type: "select_rows", ids: [1, 2] },
   ]);
   assert.deepEqual(log, [
+    ["highlight", null], // every run starts with the last ring cleared
     ["navigate", "/items"],
     ["narrate", "Here", true],
     ["highlight", "Add"],
@@ -140,6 +145,7 @@ test("guided mode plays beats in order, honours waits (capped at 10 s) and skips
     "guided"
   );
   assert.deepEqual(log, [
+    ["highlight", null],
     ["running", true],
     ["navigate", "/a"],
     ["sleep", 1],
@@ -218,14 +224,14 @@ test("postTurn: a 500 that carries a readable reply is a reply", async () => {
 
 // --- chat rules --------------------------------------------------------------------------------
 
-test("history tags narration and errors; saved chats keep real turns only", () => {
+test("history sends real turns only; saved chats keep real turns only", () => {
   const lines = [
     { id: "1", role: "user", content: "hi" },
     { id: "2", role: "assistant", content: "Step", kind: "narration" },
     { id: "3", role: "assistant", content: "Oops", kind: "error" },
     { id: "4", role: "assistant", content: "Hello" },
   ];
-  assert.deepEqual(toHistoryTurns(lines).map((t) => t.kind ?? "-"), ["-", "narrate", "error", "-"]);
+  assert.deepEqual(toHistoryTurns(lines), [{ role: "user", content: "hi" }, { role: "assistant", content: "Hello" }]);
   assert.deepEqual(toSavable(lines), [{ role: "user", content: "hi" }, { role: "assistant", content: "Hello" }]);
 });
 
@@ -293,7 +299,8 @@ test("Markdown renders text nodes only: no HTML, no javascript: links", () => {
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /&lt;img/);
   assert.doesNotMatch(html, /href="javascript/);
-  assert.match(html, /<a href="https:\/\/x\.example" target="_blank" rel="noopener noreferrer nofollow">ext<\/a>/);
+  assert.match(html, /<a href="https:\/\/x\.example\/" target="_blank" rel="noopener noreferrer nofollow" title="https:\/\/x\.example\/">ext<\/a>/);
+  assert.match(html.replace(/<!-- -->/g, ""), /\(x\.example\)/, "an external link shows where it goes");
   assert.match(html, /<a href="\/items">in<\/a>/);
   assert.match(html, /<strong>Bold<\/strong>/);
   assert.match(html, /<ul><li>one<\/li><li>two<\/li><\/ul>/);
@@ -324,7 +331,7 @@ test("navigate actions never go to API routes or sign-out", async () => {
   assert.equal(isSafeNavigationPath("/apiary"), true);
   const { deps, log } = fakeDeps();
   await createActionRunner(deps).run([{ type: "navigate", to: "/api/x" }, { type: "navigate", to: "/ok" }]);
-  assert.deepEqual(log, [["navigate", "/ok"]]);
+  assert.deepEqual(log.filter((e) => e[0] === "navigate"), [["navigate", "/ok"]]);
 });
 
 test("unknown failures keep the question and offer only a manual try", () => {
@@ -352,4 +359,154 @@ test("Markdown renders hostile input in linear time", () => {
     renderToString(h(Markdown, { text: unit.repeat(15_000) }));
     assert.ok(Date.now() - t0 < 1500, `${unit} took ${Date.now() - t0} ms`);
   }
+});
+
+// --- review fixes: navigation ------------------------------------------------------------------
+
+test("navigation is resolved before it is judged, and the resolved path is what is followed", () => {
+  for (const bad of ["/notes/../api/x", "/./logout", "/%2e/api/x", "/users/sign_out", "/account/logout", "/a/%2e%2e/api", "/x/sign-off", "/x/log_off/", "/api", "/%2E%2E/api/x", "//evil.example", "/\\evil.example", "https://evil.example"]) {
+    assert.equal(normalizeNavigationPath(bad), null, bad);
+    assert.equal(isSafeNavigationPath(bad), false, bad);
+  }
+  assert.equal(normalizeNavigationPath("/notes/../items?x=1#y"), "/items?x=1#y");
+  assert.equal(normalizeNavigationPath(" /a/./b "), "/a/b");
+  assert.equal(normalizeNavigationPath("/apiary"), "/apiary");
+  assert.equal(normalizeNavigationPath("/signature"), "/signature");
+});
+
+test("the runner navigates to the resolved path and refuses the tricks", async () => {
+  const { deps, log } = fakeDeps();
+  await createActionRunner(deps).run([
+    { type: "navigate", to: "/notes/../api/x" },
+    { type: "navigate", to: "/%2e/api/x" },
+    { type: "navigate", to: "/./logout" },
+    { type: "navigate", to: "/users/sign_out" },
+    { type: "navigate", to: "/a/./b/../c" },
+  ]);
+  assert.deepEqual(log.filter((e) => e[0] === "navigate"), [["navigate", "/a/c"]]);
+});
+
+test("in-app links in a reply use the same filter as navigate", () => {
+  const html = renderToString(h(Markdown, { text: "[a](/api/delete) [b](/logout) [c](/x/../api/y) [d](/notes/../items?q=1)" })).replace(/<!-- -->/g, "");
+  assert.doesNotMatch(html, /href="[^"]*(?:api|logout)/);
+  assert.match(html, /<a href="\/items\?q=1">d<\/a>/);
+});
+
+// --- review fixes: markdown tokenizer ----------------------------------------------------------
+
+test("a link address with markup in it is not a link, so no second link can hide in it", () => {
+  for (const text of [
+    "\\[a](/x[b](https://evil.com/?d=SECRET)",
+    "`[a](/x`[b](https://evil.com/?d=SECRET)",
+    "`x [a](/y`[b](https://evil.com/?d=SECRET)",
+    "**[a](/x**[b](https://evil.com/?d=SECRET)",
+    "[a](/x\"y) [b](/x'y) [c](/x<y) [d](/x\\y)",
+  ]) {
+    const html = renderToString(h(Markdown, { text }));
+    assert.doesNotMatch(html, /evil\.com/, text);
+    assert.doesNotMatch(html, /<a /, text);
+  }
+  const ok = renderToString(h(Markdown, { text: "[fine](/items) and [ext](https://good.example/p?a=1)" }));
+  assert.equal((ok.match(/<a /g) ?? []).length, 2);
+});
+
+// --- review fixes: chat rules ------------------------------------------------------------------
+
+test("history is the latest real turns, capped in count and bytes, keeping the taint tag", () => {
+  const lines = [];
+  for (let i = 0; i < 60; i++) {
+    lines.push({ id: `u${i}`, role: "user", content: `question ${i}` });
+    lines.push({ id: `n${i}`, role: "assistant", content: "narration", kind: "narration" });
+    lines.push({ id: `e${i}`, role: "assistant", content: "error", kind: "error" });
+    lines.push({ id: `a${i}`, role: "assistant", content: `answer ${i}`, ...(i === 59 ? { tainted: true } : {}) });
+  }
+  const turns = toHistoryTurns(lines);
+  assert.equal(turns.length, MAX_HISTORY_TURNS);
+  assert.ok(turns.every((t) => t.kind === undefined && t.content !== "narration" && t.content !== "error"));
+  assert.deepEqual(turns.at(-1), { role: "assistant", content: "answer 59", tainted: true });
+  assert.equal(turns[0].content, "question 48");
+
+  const big = [];
+  for (let i = 0; i < 40; i++) big.push({ id: `${i}`, role: i % 2 ? "assistant" : "user", content: `${i}:`.padEnd(30_000, "é") });
+  const capped = toHistoryTurns(big);
+  const bytes = new TextEncoder().encode(JSON.stringify(capped)).length;
+  assert.ok(bytes <= MAX_HISTORY_BYTES, `${bytes} bytes`);
+  assert.ok(MAX_HISTORY_BYTES < 128 * 1024);
+  assert.ok(capped.length >= 1 && capped.length < 24);
+  assert.ok(capped.at(-1).content.startsWith("39:"), "the newest turn is the one kept");
+
+  const one = toHistoryTurns([{ id: "1", role: "user", content: "\u0001".repeat(32_000) }]);
+  assert.ok(new TextEncoder().encode(JSON.stringify(one)).length <= MAX_HISTORY_BYTES, "one huge turn is cut down to fit");
+});
+
+test("speakableText takes 40k brackets quickly", () => {
+  for (const unit of ["[", "![", "[](", "```"]) {
+    const t0 = Date.now();
+    const out = speakableText(unit.repeat(40_000));
+    assert.ok(Date.now() - t0 < 200, `${unit} took ${Date.now() - t0} ms`);
+    assert.ok(out.length <= 2000);
+  }
+  assert.equal(speakableText("[".repeat(40_000)), "[".repeat(2000));
+  assert.equal(speakableText("see [the list](/items) and ![img](/x.png) ok"), "see the list and ok");
+});
+
+// --- review fixes: the dock --------------------------------------------------------------------
+
+test("device chats need a user: no userId, no saved-chats button", () => {
+  const open = (extra) => renderToString(h(AgentDock, { endpoint: "/api/pa/agent", defaultOpen: true, intro: "Hi", suggestions: [], ...extra }));
+  assert.doesNotMatch(open({}), /aria-label="Chats"/, "one shared slot would leak between accounts");
+  assert.doesNotMatch(open({ history: "local" }), /aria-label="Chats"/);
+  assert.match(open({ userId: "u1" }), /aria-label="Chats"/);
+  assert.doesNotMatch(open({ userId: "u1", history: false }), /aria-label="Chats"/);
+  const adapter = { list: async () => [], get: async () => null, save: async () => {}, delete: async () => {}, deleteAll: async () => {} };
+  assert.match(open({ history: adapter }), /aria-label="Chats"/);
+});
+
+test("the server-safe entry holds only pure helpers", () => {
+  assert.deepEqual(Object.keys(anchorsEntry).sort(), ["isAnchorName", "paAnchor"]);
+  assert.deepEqual(anchorsEntry.paAnchor("a.b"), { "data-pa-anchor": "a.b" });
+});
+
+// --- review fixes: the runner ------------------------------------------------------------------
+
+const settle = (ms = 15) => new Promise((r) => setTimeout(r, ms));
+
+test("a run clears the last ring first, and a ring from an immediate run fades too", async () => {
+  const { deps, log } = fakeDeps({ lingerMs: 5 });
+  const r = createActionRunner(deps);
+  await r.run([{ type: "highlight", anchor: "x", label: "Here" }]);
+  assert.deepEqual(log, [["highlight", null], ["highlight", "Here"]]);
+  await settle();
+  assert.deepEqual(log.at(-1), ["highlight", null], "the ring let go on its own");
+  log.length = 0;
+  await r.run([{ type: "navigate", to: "/a" }]);
+  await settle();
+  assert.deepEqual(log, [["highlight", null], ["navigate", "/a"]], "nothing was lit, so nothing to fade");
+});
+
+test("a newer run is not cut short by the fade of an older one", async () => {
+  const { deps, log } = fakeDeps({ lingerMs: 10 });
+  const r = createActionRunner(deps);
+  await r.run([{ type: "highlight", anchor: "x", label: "One" }]);
+  await r.run([{ type: "highlight", anchor: "y", label: "Two" }]);
+  await settle(8);
+  assert.deepEqual(log.at(-1), ["highlight", "Two"]);
+  await settle(20);
+  assert.deepEqual(log.at(-1), ["highlight", null]);
+  assert.equal(log.filter((e) => e[0] === "highlight" && e[1] === null).length, 3, "start of run one, start of run two, one fade");
+});
+
+test("cancel drops only what this runner put on the bus", async () => {
+  clearPendingPaActions();
+  emitPaAction("someone_elses", { keep: true });
+  const r = createActionRunner({ navigate() {}, narrate() {}, setHighlight() {}, waitForAnchor: async () => null, sleep: async () => {} });
+  await r.run([{ type: "select_rows", ids: [1] }]);
+  r.cancel();
+  const mine = [];
+  onPaAction("select_rows", (d) => mine.push(d))();
+  assert.deepEqual(mine, []);
+  const theirs = [];
+  onPaAction("someone_elses", (d) => theirs.push(d))();
+  assert.deepEqual(theirs, [{ keep: true }]);
+  clearPendingPaActions();
 });

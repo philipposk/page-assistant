@@ -9,7 +9,7 @@
 
 import { synthesize, transcribe } from "../voice.js";
 import { memoryLimiter, type RateDecision } from "./handler.js";
-import { crossSiteRefusal, readLimited } from "./http.js";
+import { crossSiteRefusal, isJsonRequest, readLimited } from "./http.js";
 import type { AgentUser } from "./types.js";
 
 export interface VoiceRouteOptions {
@@ -47,6 +47,7 @@ export function createVoiceRoutes(opts: VoiceRouteOptions) {
   const tts = async (req: Request): Promise<Response> => {
     const denied = await gate(req);
     if (denied) return denied;
+    if (!isJsonRequest(req)) return json({ error: "Send JSON (content-type: application/json)." }, 415);
     let body: { text?: unknown; lang?: unknown; voiceId?: unknown };
     try {
       const raw = await readLimited(req, 16 * 1024);

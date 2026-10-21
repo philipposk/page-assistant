@@ -24,20 +24,32 @@ export function HighlightOverlay({ target }: { target: HighlightTarget | null })
       setRect(null);
       return;
     }
-    const update = () => setRect(rectOf(target.element));
-    update();
-    // Follow the element while the page settles: scrolling, late rows, a resizing panel.
-    window.addEventListener("scroll", update, true);
-    window.addEventListener("resize", update);
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
-    observer?.observe(target.element);
-    const poll = window.setInterval(update, 250);
-    return () => {
+    let observer: ResizeObserver | null = null;
+    let poll = 0;
+    const stop = () => {
       window.removeEventListener("scroll", update, true);
       window.removeEventListener("resize", update);
       observer?.disconnect();
       window.clearInterval(poll);
     };
+    function update() {
+      // The page moved on (a navigation re-rendered it): the element is gone, so is the ring.
+      if (!target!.element.isConnected) {
+        stop();
+        setRect(null);
+        return;
+      }
+      setRect(rectOf(target!.element));
+    }
+    update();
+    if (!target.element.isConnected) return;
+    // Follow the element while the page settles: scrolling, late rows, a resizing panel.
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    observer?.observe(target.element);
+    poll = window.setInterval(update, 250);
+    return stop;
   }, [target]);
 
   if (!target || !rect || typeof document === "undefined") return null;

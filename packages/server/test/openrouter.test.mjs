@@ -4,7 +4,8 @@ import { createAgent, MemoryPendingActionStore, defineTool } from "../dist/agent
 import { anthropicProvider } from "../dist/llm/anthropic.js";
 import { routerFromEnv } from "../dist/llm/router.js";
 import { HttpProviderError } from "../dist/llm/errors.js";
-import { acceptsSampling, acceptsForcedTool, acceptsEffort } from "../dist/llm/modelRules.js";
+import { acceptsSampling, acceptsForcedTool, acceptsEffort, claudeIdFromOpenRouter } from "../dist/llm/modelRules.js";
+import { MODEL_DEFAULTS } from "@page-assistant/core";
 
 // --- helpers -------------------------------------------------------------------------------
 
@@ -35,24 +36,27 @@ const TOOL = { name: "t", description: "d", parameters: { type: "object", proper
 
 // --- model rules -----------------------------------------------------------------------------
 
-test("model rules read OpenRouter's Claude ids like Anthropic's own", () => {
-  assert.equal(acceptsSampling("anthropic/claude-haiku-5.5"), false);
-  assert.equal(acceptsForcedTool("anthropic/claude-haiku-5.5"), true);
-  assert.equal(acceptsEffort("anthropic/claude-haiku-5.5"), true);
-  assert.equal(acceptsForcedTool("anthropic/claude-sonnet-5.5"), false);
-  assert.equal(acceptsForcedTool("anthropic/claude-opus-5.5:thinking"), false);
-  assert.equal(acceptsSampling("Anthropic/Claude-Fable-5.1"), false);
+test("OpenRouter's Claude ids read as Anthropic's own, so the same rules apply", () => {
+  const rules = (m) => {
+    const c = claudeIdFromOpenRouter(m);
+    return { sampling: acceptsSampling(c), forced: acceptsForcedTool(c), effort: acceptsEffort(c) };
+  };
+  assert.equal(claudeIdFromOpenRouter("anthropic/claude-haiku-5.5"), "claude-haiku-5-5");
+  assert.deepEqual(rules("anthropic/claude-haiku-5.5"), { sampling: false, forced: true, effort: true });
+  assert.equal(rules("anthropic/claude-sonnet-5.5").forced, false);
+  assert.equal(rules("anthropic/claude-opus-5.5:thinking").forced, false);
+  assert.equal(rules("Anthropic/Claude-Fable-5.1").sampling, false);
   // Older OpenRouter ids put the version first.
-  assert.equal(acceptsSampling("anthropic/claude-3.5-haiku"), true);
-  assert.equal(acceptsSampling("anthropic/claude-4.7-opus"), false);
-  assert.equal(acceptsEffort("anthropic/claude-4.6-sonnet"), true);
-  assert.equal(acceptsEffort("anthropic/claude-4.5-sonnet-20250929"), false);
+  assert.equal(claudeIdFromOpenRouter("anthropic/claude-3.5-haiku"), "claude-haiku-3-5");
+  assert.equal(rules("anthropic/claude-3.5-haiku").sampling, true);
+  assert.equal(rules("anthropic/claude-4.7-opus").sampling, false);
+  assert.equal(rules("anthropic/claude-4.6-sonnet").effort, true);
+  assert.equal(rules("anthropic/claude-4.5-sonnet-20250929").effort, false);
   // An alias that moves to new models gets neither temperature nor a forced tool.
-  assert.equal(acceptsSampling("~anthropic/claude-opus-latest"), false);
-  assert.equal(acceptsForcedTool("~anthropic/claude-opus-latest"), false);
-  // Anthropic's own ids read as before.
-  assert.equal(acceptsSampling("claude-haiku-4-5-20251001"), true);
-  assert.equal(acceptsForcedTool("claude-haiku-5-5"), true);
+  assert.equal(claudeIdFromOpenRouter("~anthropic/claude-opus-latest"), "claude-opus-latest");
+  assert.deepEqual(rules("~anthropic/claude-opus-latest"), { sampling: false, forced: false, effort: false });
+  assert.equal(claudeIdFromOpenRouter("openai/gpt-4o-mini"), null);
+  assert.equal(claudeIdFromOpenRouter("claude-haiku-5-5"), null);
 });
 
 // --- provider --------------------------------------------------------------------------------
@@ -159,8 +163,8 @@ test("router: the default OpenRouter model goes through /messages with its own r
     async (requests) => {
       await routerFromEnv({ OPENROUTER_API_KEY: "k" }).complete({ system: "s", tools: [], messages: [{ role: "user", content: "q" }] });
       assert.equal(requests[0].url, "https://openrouter.ai/api/v1/messages");
-      assert.equal(requests[0].body.model, "anthropic/claude-3.5-haiku");
-      assert.equal(requests[0].body.temperature, 0.3, "Haiku 3.5 still takes a temperature");
+      assert.equal(requests[0].body.model, MODEL_DEFAULTS.openrouter);
+      assert.equal(requests[0].body.temperature, 0.3, "Haiku 4.5 still takes a temperature");
 
       await routerFromEnv({ OPENROUTER_API_KEY: "k", PA_OPENROUTER_MODEL: "anthropic/claude-opus-5.5" }).complete({ system: "s", tools: [TOOL], forceTool: "t", messages: [{ role: "user", content: "q" }] });
       assert.equal(requests[1].body.model, "anthropic/claude-opus-5.5");

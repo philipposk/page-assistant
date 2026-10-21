@@ -14,6 +14,8 @@ import type { AgentTool } from "./types.js";
 export interface FactSource {
   tool: AgentTool;
   value: unknown;
+  /** The call's arguments (what the model supplied). */
+  args?: Record<string, unknown>;
   /** The step's rendered answer, when the tool has one. */
   rendered?: string;
 }
