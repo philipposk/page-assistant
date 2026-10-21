@@ -9,9 +9,9 @@
   "types": "./dist/index.d.ts",
   "bin": { "page-assistant-server": "./dist/bin.js" },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" },
-    "./next": { "types": "./dist/agent/next.d.ts", "import": "./dist/agent/next.js" },
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js", "default": "./dist/agent/index.js" },
+    "./next": { "types": "./dist/agent/next.d.ts", "import": "./dist/agent/next.js", "default": "./dist/agent/next.js" },
     "./package.json": "./package.json"
   },
   "files": ["dist", "supabase", "LICENSE", "README.md"],

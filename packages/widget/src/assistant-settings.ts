@@ -1,5 +1,7 @@
 // Conversation + appearance preferences (localStorage).
 
+import { MODEL_CATALOG, type CatalogModel } from "@page-assistant/core";
+
 export const ASSISTANT_SETTINGS_STORAGE_KEY = "page_assistant_settings";
 export const ASSISTANT_SETTINGS_CHANGE_EVENT = "page-assistant-settings-change";
 
@@ -21,24 +23,13 @@ export interface AssistantSettings {
 }
 
 /**
- * Models offered in the picker, newest and most capable first.
- *
- * Model ids are exact and carry NO date suffix — `claude-haiku-4-5`, not
- * `claude-haiku-4-5-20251001`. The previous list had drifted: Claude Sonnet 4 and Claude
- * 3.5 Haiku are superseded, and the whole Claude 5 family was missing.
+ * Models offered in the picker, most capable first: core's MODEL_CATALOG, the one list of
+ * model ids (checked weekly against the providers, so a retired id doesn't linger here).
  *
  * A server only serves a model it has the matching key for, so this list is a fallback:
  * `GET /v1/models` reports what the server can actually do and the picker prefers that.
  */
-export const DEFAULT_MODELS = [
-  { id: "claude-opus-5", label: "Claude Opus 5 (most capable)", provider: "anthropic" },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5 (balanced)", provider: "anthropic" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (fast)", provider: "anthropic" },
-  { id: "claude-fable-5-1", label: "Claude Fable 5.1 (deep reasoning)", provider: "anthropic" },
-  { id: "gpt-4o-mini", label: "GPT-4o Mini (fast)", provider: "openai" },
-  { id: "gpt-4o", label: "GPT-4o", provider: "openai" },
-  { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5 (OpenRouter)", provider: "openrouter" },
-] as const;
+export const DEFAULT_MODELS: readonly CatalogModel[] = MODEL_CATALOG;
 
 const DEFAULTS: AssistantSettings = {
   // "" = send no model override; the server picks. Previously "gpt-4o-mini", which meant

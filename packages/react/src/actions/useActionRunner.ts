@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { UiAction, UiActionMode } from "../protocol.js";
 import { createActionRunner, type HighlightTarget, type UiActionHandler } from "./runner.js";

@@ -15,9 +15,11 @@ import {
   CONFIRM_GONE_MESSAGE,
   TAINTED_CARD_MESSAGE,
   TAINT_NOTE,
+  TOOL_TIMEOUT_MESSAGE,
   WRITE_REFUSAL,
   formatValue,
   labelFor,
+  stripHidden,
 } from "./text.js";
 import type { AgentTool, ConfirmSpec, PendingActionCard, RiskTier, ToolContext } from "./types.js";
 
@@ -137,7 +139,8 @@ export class AgentToolRegistry<C = unknown> {
       }
     }
     const result = await invoke(tool, args, ctx);
-    if (tool.taints && result.ok) ctx.tainted = true;
+    // Taints on any outcome: a failure's message can carry the stranger's text too.
+    if (tool.taints) ctx.tainted = true;
     return result;
   }
 
@@ -154,7 +157,11 @@ export class AgentToolRegistry<C = unknown> {
     const checked = this.prepareArgs(tool, args);
     if ("problem" in checked) return fail(CONFIRM_GONE_MESSAGE);
     ctx.confirmed = true;
-    return invoke(tool, checked.args, ctx);
+    const result = await invoke(tool, checked.args, ctx);
+    // A confirmed read of someone else's text taints the reply like any other: the client tags
+    // it and later turns stay guarded.
+    if (tool.taints) ctx.tainted = true;
+    return result;
   }
 
   private async offer(tool: AgentTool<any, any, C>, spec: ConfirmSpec, args: Record<string, unknown>, ctx: ToolContext<C>): Promise<StepResult> {
@@ -163,7 +170,8 @@ export class AgentToolRegistry<C = unknown> {
       let title: string | undefined;
       let details: string[] | undefined;
       if (spec.prepare) {
-        const prepared = await spec.prepare(args, ctx);
+        const prepared = await untilAborted(Promise.resolve(spec.prepare(args, ctx)), ctx.signal);
+        if (prepared === ABORTED) return fail(TOOL_TIMEOUT_MESSAGE);
         if (prepared && (prepared as { ok?: boolean }).ok === false) {
           const error = String((prepared as { error?: unknown }).error || "That can't be done.");
           return fail(error);
@@ -180,10 +188,12 @@ export class AgentToolRegistry<C = unknown> {
       title ??= typeof spec.title === "function" ? spec.title(finalArgs) : spec.title;
       // Capped to what the store keeps (the SQL allows 500 characters), so a long title built
       // from arguments can't fail the insert.
-      title = clip((title ?? "").trim(), MAX_TITLE_CHARS) || "Go ahead with this?";
+      // Hidden characters (bidi overrides, zero-width) go: the card must say what it shows.
+      title = clip(stripHidden(title ?? "").trim(), MAX_TITLE_CHARS) || "Go ahead with this?";
       if (!details) details = spec.details ? await spec.details(finalArgs, ctx) : defaultDetails(tool, spec, finalArgs);
-      details = (details ?? []).map((d) => clip(String(d), MAX_DETAIL_CHARS)).filter(Boolean).slice(0, 20);
-      if (ctx.tainted && !details.includes(TAINT_NOTE)) details.push(TAINT_NOTE);
+      details = (details ?? []).map((d) => clip(stripHidden(String(d)), MAX_DETAIL_CHARS)).filter(Boolean).slice(0, 20);
+      // First, so it shows without scrolling the details.
+      if (ctx.tainted && !details.includes(TAINT_NOTE)) details.unshift(TAINT_NOTE);
 
       const token = newToken();
       const now = new Date();
@@ -226,20 +236,52 @@ function fail(error: string): StepResult {
   return { ok: false, value: { ok: false, error }, error };
 }
 
-/** Run the tool body; a throw or `{ ok: false }` is a failure, anything else a success. */
+const ABORTED: unique symbol = Symbol("aborted");
+
+/** `p`, or ABORTED once `signal` fires (the turn's deadline, or Stop). Never leaves a rejection unhandled. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
+  if (signal.aborted) {
+    p.catch(() => undefined);
+    return Promise.resolve(ABORTED);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve(ABORTED);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      }
+    );
+  });
+}
+
+/**
+ * Run the tool body, bounded by the turn's signal (a query that ignores ctx.signal can't hold
+ * the request past its deadline). A throw or `{ ok: false }` is a failure, anything else a
+ * success. A thrown message goes to the model (it may explain a bad argument), but the user
+ * sees a plain sentence: thrown errors are often a database's or library's own words.
+ */
 async function invoke<C>(tool: AgentTool<any, any, C>, args: Record<string, unknown>, ctx: ToolContext<C>): Promise<StepResult> {
   try {
-    const value = await tool.run(args, ctx);
+    const value = await untilAborted(Promise.resolve().then(() => tool.run(args, ctx)), ctx.signal);
+    if (value === ABORTED) return fail(TOOL_TIMEOUT_MESSAGE);
     if (value && typeof value === "object" && (value as { ok?: unknown }).ok === false) {
       const error = String((value as { error?: unknown }).error ?? "That did not work.");
       return { ok: false, value, error };
     }
     return { ok: true, value: value === undefined ? { ok: true } : value };
   } catch (e) {
-    const error = (e instanceof Error ? e.message : String(e)) || "That action failed.";
-    return { ok: false, value: { ok: false, error }, error };
+    const detail = ((e instanceof Error ? e.message : String(e)) || "").slice(0, 300);
+    return { ok: false, value: { ok: false, error: detail || THROWN_MESSAGE }, error: THROWN_MESSAGE };
   }
 }
+
+const THROWN_MESSAGE = "That action failed.";
 
 function defaultDetails(tool: AgentTool, spec: ConfirmSpec, args: Record<string, unknown>): string[] {
   const out: string[] = [];

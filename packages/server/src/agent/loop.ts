@@ -12,7 +12,7 @@
 
 import { DEFAULT_SCRUB_RULES, scrubText, type ChatMessage } from "@page-assistant/core";
 import { coerceUiActions, customActionProblems, type UiActionRules } from "./actions.js";
-import { builtinTools } from "./builtins.js";
+import { BUILTIN_TOOLS, builtinTools } from "./builtins.js";
 import {
   DEFAULT_AGENT_MODEL,
   DEFAULT_FALLBACK_MODEL,
@@ -63,6 +63,8 @@ import { validateAgentText, type FactSource } from "./validator.js";
 const MAX_CARDS = 8;
 const MAX_SUGGESTIONS = 3;
 const MAX_TOOL_RESULT_CHARS = 12_000;
+/** Tool calls handled per model round; the rest are answered "one step at a time". */
+const MAX_CALLS_PER_ROUND = 10;
 /** Rounds in a row that only repeat earlier calls before the turn stops. */
 const IDLE_ROUNDS_BEFORE_STOP = 2;
 
@@ -70,6 +72,21 @@ function envNum(name: string, def: number): number {
   const raw = typeof process !== "undefined" ? process.env?.[name] : undefined;
   const n = raw ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+}
+
+/**
+ * Addresses a tool result wrote that may stay links in a tainted turn: never from a built-in
+ * (they echo their arguments) and never one the model itself put in the call's arguments
+ * (`point_at({ label: "https://evil/?d=…" })` must not launder a link).
+ */
+function keepUrlsFrom(sources: FactSource[]): Set<string> {
+  const keep = new Set<string>();
+  for (const s of sources) {
+    if (BUILTIN_TOOLS.has(s.tool.name)) continue;
+    const fromArgs = urlsIn(s.args ?? {});
+    for (const u of urlsIn(s.value)) if (!fromArgs.has(u)) keep.add(u);
+  }
+  return keep;
 }
 
 export interface TurnHooks {
@@ -135,10 +152,25 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
     }
   }
 
-  async function confirmTurn(req: AgentTurnRequest, user: AgentUser, app: C, started: number): Promise<AgentTurnResponse> {
+  async function confirmTurn(req: AgentTurnRequest, user: AgentUser, app: C, started: number, hooks: TurnHooks): Promise<AgentTurnResponse> {
+    // The confirmed run is bounded like any turn: its deadline, or the client going away.
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(new Error("deadline")), turnDeadlineMs);
+    const onClientAbort = () => abort.abort(hooks.signal?.reason ?? new Error("stopped"));
+    if (hooks.signal?.aborted) onClientAbort();
+    else hooks.signal?.addEventListener("abort", onClientAbort, { once: true });
+    try {
+      return await confirmRun(req, user, app, started, abort.signal);
+    } finally {
+      clearTimeout(timer);
+      hooks.signal?.removeEventListener("abort", onClientAbort);
+    }
+  }
+
+  async function confirmRun(req: AgentTurnRequest, user: AgentUser, app: C, started: number, signal: AbortSignal): Promise<AgentTurnResponse> {
     // The stored arguments are everything the action gets: the page may have changed since the
     // card (other rows selected), and the card showed what will happen.
-    const ctx = makeContext({ ...req, page: {} }, user, app, new AbortController().signal);
+    const ctx = makeContext({ ...req, page: {} }, user, app, signal);
     const row = await store.consume(await hashToken(String(req.confirmToken)), user.id, new Date());
     if (!row) {
       await report(info(user, "confirm_expired", [], 0, undefined, null, started));
@@ -150,6 +182,8 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
     if (!tool) message = step.error ?? CONFIRM_EXPIRED_MESSAGE;
     else if (!step.ok) message = say(step.error ?? "That did not work.");
     else message = say(tool.render ? safeRender(tool, step.value, row.args) : "Done.");
+    // A confirmed read of someone else's text is cleaned like any tainted output.
+    if (ctx.tainted && tool) message = cleanMarkdown(message, { keepUrls: keepUrlsFrom(step.ok ? [{ tool, value: step.value, args: row.args }] : []) });
     const uiActions = step.ok && tool?.uiActions ? coerceUiActions(safeCall(() => tool.uiActions!(step.value, row.args)), rules) : [];
     const cards = step.ok && tool?.cards && declared(req, "result_cards") ? cardsFrom(safeCall(() => tool.cards!(step.value, row.args))) : [];
     await report(info(user, step.ok ? "confirmed" : "confirmed_failed", [{ name: row.tool, ok: step.ok, risk: tool ? riskOf(tool) : "confirm" }], 0, undefined, null, started));
@@ -158,7 +192,7 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
 
   async function turn(req: AgentTurnRequest, user: AgentUser, app: C, hooks: TurnHooks = {}): Promise<AgentTurnResponse> {
     const started = Date.now();
-    if (req.confirmToken) return confirmTurn(req, user, app, started);
+    if (req.confirmToken) return confirmTurn(req, user, app, started, hooks);
 
     const message = String(req.message ?? "").trim();
     for (const r of config.refusals ?? []) {
@@ -200,6 +234,9 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
     // tainted from its first step (the client tags such replies; see AgentTurnResponse.tainted).
     const history = selectHistory(req.history, historyTokens);
     if (history.tainted) ctx.tainted = true;
+    // The page as data can carry someone else's words too (a shared document's title, a link
+    // with a crafted query). The host says when: `page.untrusted`, or `pageContext: "untrusted"`.
+    if (req.page?.untrusted === true || (config.pageContext === "untrusted" && pageHasContent(req.page))) ctx.tainted = true;
     const tools = registry.specs(ctx);
     const offered = new Set(tools.map((t) => t.name));
     const asCards = declared(req, "pending_action");
@@ -264,11 +301,13 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
       renders.length || doneWrites.size
         ? reply(joinRenders([...renders, STOPPED_AFTER_STEPS]), "aborted", "incomplete")
         : reply(failureMessage("llm_timeout"), "aborted", "llm_timeout");
-    // Addresses tool results wrote: the only http(s) links prose may keep in a tainted turn.
-    const keepUrls = () => {
-      const set = new Set<string>();
-      for (const s of factSources) urlsIn(s.value, set);
-      return set;
+    // Everything the user reads goes through here: the scrub first (it can insert "[redacted]"
+    // next to a "(url)"), then, in a tainted turn, the cleaner with only the links tool results
+    // wrote — renders and errors of every tool, not only the tainting one, since they can echo
+    // arguments the model took from injected text.
+    const visible = (text: string) => {
+      const scrubbed = say(text);
+      return ctx.tainted ? cleanMarkdown(scrubbed, { keepUrls: keepUrlsFrom(factSources) }) : scrubbed;
     };
 
     // A read chip that needs no arguments and answers in its own words: run it with no model,
@@ -279,7 +318,8 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
       ran.push({ name: forced.name, ok: step.ok, risk: "read" });
       collect(forced, step, {});
       if (step.ok) lastAnswer = { tool: forced, value: step.value, args: {} };
-      return reply(say(step.ok ? safeRender(forced, step.value, {}) : step.error ?? "That did not work."), "tool_render_direct");
+      if (step.ok) factSources.push({ tool: forced, value: step.value, args: {} });
+      return reply(visible(step.ok ? safeRender(forced, step.value, {}) : step.error ?? "That did not work."), "tool_render_direct");
     }
 
     function collect(tool: AgentTool<any, any, C>, step: StepResult, args: Record<string, unknown>) {
@@ -318,11 +358,12 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
       }
 
       if (out.toolCalls.length) {
-        const turnCalls = out.toolCalls.map((c, i) => ({ id: c.id || `call_${round}_${i}`, name: c.name, args: c.args ?? {} }));
+        const allCalls = out.toolCalls.map((c, i) => ({ id: c.id || `call_${round}_${i}`, name: c.name, args: c.args ?? {} }));
+        const turnCalls = allCalls.slice(0, MAX_CALLS_PER_ROUND);
         messages.push({
           role: "assistant",
           content: out.text ?? "",
-          toolCalls: turnCalls,
+          toolCalls: allCalls,
           ...(out.assistantContent && out.provider ? { providerContent: { provider: out.provider, content: out.assistantContent } } : {}),
         });
         let roundHadNewWork = false;
@@ -364,13 +405,15 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
 
           let rendered: string | undefined;
           let card = step.card;
+          if (step.ok && !card) factSources.push({ tool, value: step.value, args });
           if (card) rendered = step.cardMessage;
           else if (step.refused) rendered = step.error;
           else if (!chains(tool)) {
             rendered = say(step.ok ? safeRender(tool, step.value, args) : step.error ?? "That did not work.");
-            if (tool.taints) rendered = cleanMarkdown(rendered);
+            // A tainting tool's own output is always cleaned; in a tainted turn, everyone's is.
+            if (tool.taints || ctx.tainted) rendered = cleanMarkdown(rendered, ctx.tainted ? { keepUrls: keepUrlsFrom(factSources) } : {});
           }
-          if (step.ok && !card) factSources.push({ tool, value: step.value, rendered: rendered && !chains(tool) ? rendered : undefined });
+          if (step.ok && !card && rendered && !chains(tool)) factSources[factSources.length - 1].rendered = rendered;
 
           if (card && !asCards) {
             // This client shows no cards: running the action is out, and so is a reply that
@@ -402,6 +445,10 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
           }
           toolMsg(step.value);
         }
+        // Every call the model made needs an answer, even the ones past the per-round cap.
+        for (const extra of allCalls.slice(MAX_CALLS_PER_ROUND)) {
+          messages.push({ role: "tool", toolName: extra.name, toolCallId: extra.id, content: toModelText({ ok: false, error: "Too many steps at once. Do one at a time." }) });
+        }
         idleRounds = roundHadNewWork ? 0 : idleRounds + 1;
         if (idleRounds >= IDLE_ROUNDS_BEFORE_STOP && renders.length) {
           // A model that keeps asking for work it already had is not getting further.
@@ -422,8 +469,7 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
         let unfinished = "";
         if (!stepFailed && hasUnfinishedBusiness(text)) {
           unfinished = validateAgentText(text, factSources, { extraText: checkAgainst, fallback: "" }).text;
-          if (unfinished && ctx.tainted) unfinished = cleanMarkdown(unfinished, { keepUrls: keepUrls() });
-          unfinished = say(unfinished);
+          if (unfinished) unfinished = visible(unfinished);
         }
         if (unfinished && !renders.includes(unfinished)) renders.push(unfinished);
         return reply(joinRenders(renders), "tool_render");
@@ -433,8 +479,7 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
       const checked = validateAgentText(text, factSources, { extraText: checkAgainst, fallback });
       text = checked.text;
       // Prose in a turn that read someone else's text: no image, raw HTML or odd link.
-      if (ctx.tainted) text = cleanMarkdown(text, { keepUrls: keepUrls() });
-      return reply(say(text), checked.corrected ? "model_reply_corrected" : "model_reply");
+      return reply(visible(text), checked.corrected ? "model_reply_corrected" : "model_reply");
     }
 
     // Steps that ran keep their answers: the round limit is a reason to stop, never to throw
@@ -447,6 +492,10 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
 
 function makeContext<C>(req: AgentTurnRequest, user: AgentUser, app: C, signal: AbortSignal): ToolContext<C> {
   return { user, app, request: req, page: req.page ?? {}, tainted: false, confirmed: false, signal };
+}
+
+function pageHasContent(page: AgentTurnRequest["page"]): boolean {
+  return !!page && (!!page.title || (!!page.state && Object.keys(page.state).length > 0));
 }
 
 function declared(req: AgentTurnRequest, cap: string): boolean {
@@ -575,7 +624,8 @@ function escapeMd(s: string): string {
 function userContent(req: AgentTurnRequest, message: string, forced: AgentTool | undefined): string {
   const page = req.page ?? {};
   const view: Record<string, unknown> = {};
-  if (page.path) view.path = String(page.path).slice(0, 500);
+  // The path only: a query string is the easiest place for someone else's words (a crafted link).
+  if (page.path) view.path = String(page.path).split(/[?#]/)[0].slice(0, 500);
   if (page.title) view.title = String(page.title).slice(0, 200);
   if (page.state && typeof page.state === "object") view.state = page.state;
   let pageJson = safeJson(view, 4001) || "{}";

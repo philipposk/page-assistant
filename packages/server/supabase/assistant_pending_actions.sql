@@ -40,6 +40,9 @@ create index if not exists assistant_pending_actions_expires_idx
 alter table public.assistant_pending_actions enable row level security;
 -- No policies on purpose: see "Access" above.
 revoke all on table public.assistant_pending_actions from anon, authenticated;
+-- The store's only caller. Supabase grants this by default; said here so a project that
+-- tightened its defaults still works.
+grant select, insert, delete on table public.assistant_pending_actions to service_role;
 
 -- Delete expired cards. Returns how many went.
 create or replace function public.assistant_pending_actions_sweep()

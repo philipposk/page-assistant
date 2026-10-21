@@ -2,8 +2,8 @@
 // and how a failed turn reads. Pure functions, so they are testable without the dock.
 //
 // `lines` mixes real turns with two local-only kinds: narration beats from a walkthrough and
-// error bubbles. Neither is saved. Both are sent back as history, tagged, so the server drops
-// them before the model reads them as its own words.
+// error bubbles. Neither is saved and neither is sent back: the model should only ever see
+// what was really said.
 
 import type { AgentHistoryTurn, AgentTurnResponse, ResultCard } from "../protocol.js";
 import { AgentRequestError } from "./client.js";
@@ -34,6 +34,13 @@ export interface ChatLine {
 
 /** Longest history item the server takes. */
 export const MAX_TURN_CHARS = 32_000;
+/** How many earlier turns a request carries. The server reads no more than this. */
+export const MAX_HISTORY_TURNS = 24;
+/**
+ * Most bytes of history a request carries. The server refuses a body over 256 KB, and a long
+ * chat of long replies would pass that and then fail on every message after.
+ */
+export const MAX_HISTORY_BYTES = 100_000;
 /** A Retry-After above this is a daily limit: no button. */
 export const MAX_RETRY_WAIT_SECONDS = 3600;
 
@@ -53,15 +60,34 @@ export function clipChars(text: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-/** The `history` of a request: every line, local-only ones tagged. */
-export function toHistoryTurns(lines: ChatLine[]): AgentHistoryTurn[] {
-  return lines.map((l) => {
+const encoder = new TextEncoder();
+const turnBytes = (t: AgentHistoryTurn) => encoder.encode(JSON.stringify(t)).length;
+
+/**
+ * The `history` of a request: the latest real turns, newest kept first when space runs out.
+ * Narration beats and error bubbles are left out. `tainted` stays on the turns that have it.
+ */
+export function toHistoryTurns(lines: ChatLine[], maxBytes: number = MAX_HISTORY_BYTES): AgentHistoryTurn[] {
+  const out: AgentHistoryTurn[] = [];
+  let bytes = 2;
+  for (let i = lines.length - 1; i >= 0 && out.length < MAX_HISTORY_TURNS; i--) {
+    const l = lines[i];
+    if ((l.kind ?? "turn") !== "turn") continue;
     const t: AgentHistoryTurn = { role: l.role, content: clipChars(l.content, MAX_TURN_CHARS) };
-    if (l.kind === "narration") t.kind = "narrate";
-    else if (l.kind === "error") t.kind = "error";
     if (l.tainted) t.tainted = true;
-    return t;
-  });
+    let size = turnBytes(t) + 1;
+    if (bytes + size > maxBytes) {
+      if (out.length) break; // older turns would not fit
+      // Even the newest turn alone is too big: cut it down until it fits.
+      while (size + bytes > maxBytes && t.content.length > 0) {
+        t.content = clipChars(t.content, Math.floor(t.content.length * 0.7));
+        size = turnBytes(t) + 1;
+      }
+    }
+    out.push(t);
+    bytes += size;
+  }
+  return out.reverse();
 }
 
 /** Real turns only: what a saved chat holds (with the taint tag, so a reopened chat stays guarded). */

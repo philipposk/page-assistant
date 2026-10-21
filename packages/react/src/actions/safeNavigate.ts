@@ -20,17 +20,44 @@ export function isSafeInAppPath(to: unknown): to is string {
   if (path.includes("\\")) return false;
   if (hasControlChars(path)) return false;
   if (/^\/*[a-z][a-z0-9+.-]*:/i.test(path)) return false;
-  return true;
+  return path.length <= 2048;
 }
 
+// Resolving a path needs a base; this host never exists, so a path that lands anywhere else
+// than on it escaped.
+const NAV_BASE = "http://in-app.invalid";
+
 /**
- * Where a `navigate` action may go: an in-app path that is not an API route or a sign-out.
- * Navigation happens without a click, so it must never hit a GET with side effects.
+ * Where a `navigate` action may go, written out the way it will be followed: an in-app path
+ * that is not an API route or a sign-out, or null. Navigation happens without a click, so it
+ * must never hit a GET with side effects. The path is resolved first (`/notes/../api/x`,
+ * `/./logout`, `/%2e/api/x` all point somewhere else than they read), and the result is what
+ * gets followed. Same rule as the server's `normalizeNavigationPath`.
  */
+export function normalizeNavigationPath(to: unknown): string | null {
+  if (!isSafeInAppPath(to)) return null;
+  let url: URL;
+  try {
+    url = new URL(to.trim(), NAV_BASE);
+  } catch {
+    return null;
+  }
+  if (url.origin !== NAV_BASE) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname).toLowerCase();
+  } catch {
+    return null;
+  }
+  // An encoded slash or dot segment that only a decoding server would resolve.
+  if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(decoded) || decoded.includes("\\")) return null;
+  if (/^\/+api(?:\/|$)/.test(decoded)) return null;
+  if (/(?:^|\/)(?:sign[-_]?out|log[-_]?out|log[-_]?off|sign[-_]?off)(?:\/|$|\.)/.test(decoded)) return null;
+  return url.pathname + url.search + url.hash;
+}
+
 export function isSafeNavigationPath(to: unknown): to is string {
-  if (!isSafeInAppPath(to)) return false;
-  const path = to.trim().toLowerCase();
-  return !/^\/+api(?:[/?#]|$)/.test(path) && !/^\/+(?:auth\/)?(?:sign-?out|log-?out)(?:[/?#]|$)/.test(path);
+  return normalizeNavigationPath(to) !== null;
 }
 
 /** An http(s) link safe to open in a new tab. */

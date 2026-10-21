@@ -8,8 +8,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./supabase": { "types": "./dist/adapters/supabase.d.ts", "import": "./dist/adapters/supabase.js" },
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./supabase": { "types": "./dist/adapters/supabase.d.ts", "import": "./dist/adapters/supabase.js", "default": "./dist/adapters/supabase.js" },
     "./package.json": "./package.json"
   },
   "files": ["dist", "supabase", "LICENSE", "README.md"],

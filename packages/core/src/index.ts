@@ -1,4 +1,6 @@
 export * from "./types.js";
+export { MODEL_DEFAULTS, MODEL_CATALOG, modelsInUse } from "./models.js";
+export type { ModelProvider, CatalogModel } from "./models.js";
 export { Assistant, forcedFactualTool, validateFactualText, stripUnknownKeys, validateArgs, coerceArgTypes } from "./grounding.js";
 export type { AssistantOptions, ForcedRouter } from "./grounding.js";
 export { validateCapabilities, capabilitySchemaProblems, CapabilitySchemaError, isCapabilityEnabled } from "./registry.js";

@@ -6,16 +6,18 @@
 // gives up on the request after a fixed time, and a 504 tells the user nothing. Ending the
 // turn first lets it answer in words.
 
-import type { ChatMessage, LLMCompletionInput, LLMCompletionOutput, LLMProvider } from "@page-assistant/core";
-import { HttpProviderError } from "../llm/errors.js";
+import { MODEL_DEFAULTS, type ChatMessage, type LLMCompletionInput, type LLMCompletionOutput, type LLMProvider } from "@page-assistant/core";
+import { AllProvidersFailedError, BILLING_PROBLEM, HttpProviderError, MODEL_REFUSED } from "../llm/errors.js";
 import { routerFromEnv } from "../llm/router.js";
 import { stripFailureLines } from "./text.js";
 import type { AgentErrorCode, AgentHistoryTurn } from "./types.js";
 
-export const DEFAULT_AGENT_MODEL = "claude-haiku-5-5";
-export const DEFAULT_FALLBACK_MODEL = "claude-haiku-4-5";
+export const DEFAULT_AGENT_MODEL: string = MODEL_DEFAULTS.agent;
+export const DEFAULT_FALLBACK_MODEL: string = MODEL_DEFAULTS.agentFallback;
 
 const MIN_CALL_MS = 3_000;
+/** Time a redo with the bigger output cap needs to be worth starting. */
+const MIN_REDO_MS = 15_000;
 const HARD_STOP_MARGIN_MS = 1_000;
 const RETRY_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 8_000;
@@ -32,6 +34,11 @@ export class LlmCallFailed extends Error {
 /** (error code, worth retrying, the provider refused the model itself). */
 export function classifyLlmError(e: unknown): { code: LlmCallFailed["code"]; retry: boolean; modelUnavailable: boolean } {
   if (e instanceof LlmCallFailed) return { code: e.code, retry: false, modelUnavailable: false };
+  // A router's whole chain failed: read it as its first provider's failure (the one that was
+  // asked for this model), worth retrying when any provider's failure was passing.
+  if (e instanceof AllProvidersFailedError && e.errors.length) {
+    return { ...classifyLlmError(e.errors[0]), retry: e.errors.some((x) => classifyLlmError(x).retry) };
+  }
   if (e instanceof HttpProviderError) {
     const detail = (e.detail || "").toLowerCase();
     if (e.status === 429 || e.status === 529) return { code: "llm_busy", retry: true, modelUnavailable: false };
@@ -39,11 +46,13 @@ export function classifyLlmError(e: unknown): { code: LlmCallFailed["code"]; ret
     if (e.status === 413 || /request too large|maximum context|context_length|prompt is too long|too many tokens/.test(detail)) {
       return { code: "llm_too_large", retry: false, modelUnavailable: false };
     }
-    if (e.status === 404 || (e.status === 400 && /model/.test(detail) && /not (?:found|supported|available)|invalid|unknown|does not exist/.test(detail))) {
+    // Only a message about the model itself: a 400 for a bad parameter often names the model
+    // too ("invalid_request_error: max_tokens … for claude-…-model"), and must not put it aside.
+    if (e.status === 404 || (e.status === 400 && MODEL_REFUSED.test(detail))) {
       return { code: "llm_not_configured", retry: false, modelUnavailable: true };
     }
-    if (e.status === 401 || e.status === 403) return { code: "llm_not_configured", retry: false, modelUnavailable: e.status === 403 && /model/.test(detail) };
-    if (e.status === 402 || /credit balance|insufficient_quota|billing/.test(detail)) return { code: "llm_not_configured", retry: false, modelUnavailable: false };
+    if (e.status === 401 || e.status === 403) return { code: "llm_not_configured", retry: false, modelUnavailable: e.status === 403 && MODEL_REFUSED.test(detail) };
+    if (e.status === 402 || BILLING_PROBLEM.test(detail)) return { code: "llm_not_configured", retry: false, modelUnavailable: false };
     return { code: "llm_error", retry: false, modelUnavailable: false };
   }
   const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
@@ -131,7 +140,18 @@ export interface CallState {
   signal?: AbortSignal;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Waits `ms`, or less when `signal` fires (Stop must not wait out a backoff). */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((r) => {
+    if (signal?.aborted) return r();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      r();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 
 /**
  * One model call under the turn's policy. Raises LlmCallFailed when it gives up. A reply cut
@@ -144,10 +164,15 @@ export async function callModel(
   input: Omit<LLMCompletionInput, "timeoutMs" | "maxTokens" | "model">,
   now: () => number = Date.now
 ): Promise<LLMCompletionOutput> {
-  let out = await callWithFallback(settings, state, { ...input, maxTokens: settings.maxTokens }, now);
+  const out = await callWithFallback(settings, state, { ...input, maxTokens: settings.maxTokens }, now);
   const cut = out.stopReason === "max_tokens" || out.stopReason === "length";
-  if (cut && settings.maxTokensRetry > settings.maxTokens && state.deadline - now() >= MIN_CALL_MS) {
-    out = await callWithFallback(settings, state, { ...input, maxTokens: settings.maxTokensRetry }, now);
+  if (cut && settings.maxTokensRetry > settings.maxTokens && state.deadline - now() >= MIN_REDO_MS) {
+    // A redo that fails (or runs out of time) leaves the cut reply, which is better than none.
+    try {
+      return await callWithFallback(settings, state, { ...input, maxTokens: settings.maxTokensRetry }, now);
+    } catch {
+      return out;
+    }
   }
   return out;
 }
@@ -225,7 +250,8 @@ async function callWithRetry(
       if (!c.retry || failures > maxRetries) throw new LlmCallFailed(c.code, e);
       const delay = Math.min(RETRY_BACKOFF_MS * 2 ** (failures - 1), MAX_BACKOFF_MS);
       if (state.deadline - now() - delay < MIN_CALL_MS) throw new LlmCallFailed(c.code, e);
-      await sleep(delay);
+      await sleep(delay, state.signal);
+      if (state.signal?.aborted) throw new LlmCallFailed("llm_timeout", e);
     } finally {
       state.signal?.removeEventListener("abort", onTurnAbort);
     }
@@ -289,7 +315,8 @@ export function selectHistory(turns: AgentHistoryTurn[] | undefined, maxTokens: 
     if (used + size > budget) {
       if (!kept.length) {
         const room = Math.max(budget - TRUNCATED_MARK.length, 0);
-        kept.push({ ...turn, content: TRUNCATED_MARK + turn.content.slice(-room) });
+        // slice(-0) would be the whole string.
+        kept.push({ ...turn, content: TRUNCATED_MARK + (room > 0 ? turn.content.slice(-room) : "") });
       }
       break;
     }

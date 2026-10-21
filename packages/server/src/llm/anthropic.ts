@@ -1,12 +1,15 @@
-import type { LLMProvider, LLMCompletionInput, LLMCompletionOutput, ChatMessage } from "@page-assistant/core";
+import { MODEL_DEFAULTS, type LLMProvider, type LLMCompletionInput, type LLMCompletionOutput, type ChatMessage } from "@page-assistant/core";
 import { fetchWithRetry, llmTimeoutMs, maxTokens } from "./fetchWithRetry.js";
 import { HttpProviderError } from "./errors.js";
-import { acceptsEffort, acceptsForcedTool, acceptsSampling } from "./modelRules.js";
+import { acceptsEffort, acceptsForcedTool, acceptsSampling, thinksByDefault } from "./modelRules.js";
+
+/** The smallest output cap for a model that thinks by default when the caller names none. */
+const THINKING_MIN_MAX_TOKENS = 4096;
 
 /** Anthropic Messages API provider with tool calling. */
 export function anthropicProvider(opts: { apiKey: string; model?: string }): LLMProvider {
   // The alias, not a dated snapshot id. Lite stays on Haiku 4.5; Agent mode passes claude-haiku-5-5.
-  const model = opts.model ?? "claude-haiku-4-5";
+  const model = opts.model ?? MODEL_DEFAULTS.anthropic;
   return {
     name: "anthropic",
     async complete(input: LLMCompletionInput): Promise<LLMCompletionOutput> {
@@ -15,9 +18,14 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
         description: t.description,
         input_schema: { type: "object", ...t.parameters },
       }));
+      // A model that thinks by default spends max_tokens on thinking first, so Lite's 1024
+      // can run out before any reply. With no cap named by the caller, give it room and ask
+      // for little thinking; a caller that names maxTokens or effort keeps its own.
+      const thinks = thinksByDefault(model);
+      const unsetCap = input.maxTokens === undefined;
       const body: any = {
         model,
-        max_tokens: input.maxTokens ?? maxTokens(),
+        max_tokens: input.maxTokens ?? (thinks ? Math.max(maxTokens(), THINKING_MIN_MAX_TOKENS) : maxTokens()),
         system: input.system,
         messages: toAnthropicMessages(input.messages),
         tools,
@@ -26,7 +34,8 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
       if (acceptsSampling(model)) body.temperature = input.temperature ?? 0.3;
       // A model that refuses forced tool use gets `auto`; the caller's prompt names the tool.
       if (input.forceTool && acceptsForcedTool(model)) body.tool_choice = { type: "tool", name: input.forceTool };
-      if (input.effort && acceptsEffort(model)) body.output_config = { effort: input.effort };
+      const effort = input.effort ?? (thinks && unsetCap ? "low" : undefined);
+      if (effort && acceptsEffort(model)) body.output_config = { effort };
       if (input.promptCache) body.cache_control = { type: "ephemeral" };
 
       const res = await fetchWithRetry(
@@ -54,8 +63,18 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
         // Preserve the provider's tool_use id so grounding can thread the result back natively.
         else if (block.type === "tool_use") toolCalls.push({ id: block.id, name: block.name, args: block.input ?? {} });
       }
-      const usage = data.usage
-        ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens }
+      // With prompt caching on, `input_tokens` counts only what came after the cached prefix
+      // (often tens), so the real prompt size adds the cache reads and writes back in.
+      const u = data.usage;
+      const cacheRead = Number(u?.cache_read_input_tokens) || 0;
+      const cacheCreation = Number(u?.cache_creation_input_tokens) || 0;
+      const usage = u
+        ? {
+            promptTokens: (Number(u.input_tokens) || 0) + cacheRead + cacheCreation,
+            completionTokens: u.output_tokens,
+            ...(cacheRead ? { cacheReadTokens: cacheRead } : {}),
+            ...(cacheCreation ? { cacheCreationTokens: cacheCreation } : {}),
+          }
         : undefined;
       return {
         toolCalls,

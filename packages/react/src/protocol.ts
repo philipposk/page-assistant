@@ -71,6 +71,11 @@ export interface AgentPage {
   url?: string;
   title?: string;
   state?: Record<string, unknown>;
+  /**
+   * The page shows text someone else wrote (a shared document, another user's message), so the
+   * turn is tainted from the start: writes need a card. Return it from `getPage`.
+   */
+  untrusted?: boolean;
 }
 
 export interface AgentTurnBody {

@@ -1,5 +1,6 @@
 // Voice proxy: TTS via ElevenLabs (falls back to OpenAI), STT via OpenAI Whisper.
 // Ported in spirit from earlier voice services, including Daisy's. Keys stay server-side.
+import { MODEL_DEFAULTS } from "@page-assistant/core";
 import { fetchWithRetry, voiceTimeoutMs } from "./llm/fetchWithRetry.js";
 import { HttpProviderError } from "./llm/errors.js";
 
@@ -50,7 +51,7 @@ export async function synthesize(req: TTSRequest, env = process.env): Promise<{ 
     {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: "gpt-4o-mini-tts", voice: voiceId ?? "nova", input: req.text }),
+      body: JSON.stringify({ model: MODEL_DEFAULTS.openaiTts, voice: voiceId ?? "nova", input: req.text }),
     },
     { timeoutMs: voiceTimeoutMs() }
   );

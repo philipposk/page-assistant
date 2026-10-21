@@ -32,7 +32,7 @@ export const DOCK_CSS = `
 .pa-agent-md hr{border:0;border-top:1px solid var(--pa-border);margin:10px 0}
 .pa-agent-md code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;background:rgba(127,127,127,.14);padding:1px 4px;border-radius:4px}
 .pa-agent-md pre{overflow-x:auto;background:rgba(127,127,127,.12);padding:8px;border-radius:8px}
-.pa-agent-md a{color:var(--pa-accent)}
+.pa-agent-md a{color:var(--pa-accent)}.pa-agent-md-host{opacity:.7;font-size:.88em}
 .pa-agent-note{margin:6px 0 0;font-size:12px;color:var(--pa-muted)}
 .pa-agent-retry{margin-top:8px}
 .pa-agent-btn{border:1px solid var(--pa-border);background:var(--pa-bg);color:inherit;border-radius:8px;padding:6px 12px;font:500 13px var(--pa-font);cursor:pointer}

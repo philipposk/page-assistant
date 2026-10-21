@@ -182,12 +182,18 @@ export class Assistant {
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const caller = req.caller ?? "user";
-    const messages: ChatMessage[] = [...(req.history ?? []), { role: "user", content: req.message }];
+    // The history is cut to the window once, here. Within the turn the messages only grow (at
+    // most MAX_TOOL_ROUNDS rounds): re-cutting them every round would change the start of the
+    // conversation between rounds, and a thinking model rejects its own replayed thinking
+    // blocks once anything before them changed.
+    const messages: ChatMessage[] = windowMessages(
+      [...(req.history ?? []), { role: "user", content: req.message }],
+      historyWindow()
+    );
     const invocations: ToolInvocation[] = [];
     const forced = this.route(req.message);
     let corrected = false;
     const usage = { promptTokens: 0, completionTokens: 0, provider: undefined as string | undefined };
-    const window = historyWindow();
 
     // Memory is live, not decorative: recall facts relevant to this request into the prompt.
     let recalled: string[] = [];
@@ -219,7 +225,7 @@ export class Assistant {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const out = await this.opts.llm.complete({
         system: this.systemPrompt(req.page, recalled, vocabulary),
-        messages: windowMessages(messages, window),
+        messages,
         tools: this.toolSpecs(),
         forceTool: round === 0 ? forced : undefined,
         temperature: forced ? 0 : 0.3,
@@ -237,7 +243,16 @@ export class Assistant {
       // sees a coherent call→result pairing. Without this the model gets results for calls
       // it has no record of making, re-calls the same tool, and burns the round budget.
       const turnCalls = out.toolCalls.map((c) => ({ id: c.id ?? genToolCallId(), name: c.name, args: c.args }));
-      messages.push({ role: "assistant", content: out.text ?? "", toolCalls: turnCalls });
+      // A model that thinks needs its own blocks (thinking included) handed back with the
+      // tool results, so keep the provider's content next to the rebuilt tool calls.
+      messages.push({
+        role: "assistant",
+        content: out.text ?? "",
+        toolCalls: turnCalls,
+        ...(out.assistantContent && out.provider
+          ? { providerContent: { provider: out.provider, content: out.assistantContent } }
+          : {}),
+      });
 
       for (const call of turnCalls) {
         const cap = this.caps.get(call.name);

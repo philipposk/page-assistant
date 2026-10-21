@@ -10,8 +10,9 @@
 // Every request must be signed in (`getUser`); there is no anonymous mode, because every
 // turn spends model credit and tools act as the user.
 
-import { crossSiteRefusal, readLimited } from "./http.js";
+import { crossSiteRefusal, isJsonRequest, readLimited } from "./http.js";
 import { createAgent, type Agent } from "./loop.js";
+import { isTokenShaped } from "./pending.js";
 import { failureMessage } from "./text.js";
 import type { AgentConfig, AgentHistoryTurn, AgentPage, AgentTurnRequest, AgentTurnResponse, AgentUser } from "./types.js";
 
@@ -77,7 +78,7 @@ export function createAgentHandler<C = unknown>(options: AgentHandlerOptions<C>)
     if (crossSite) return json({ error: crossSite }, 403);
     // JSON only: a cross-site form or a "simple" fetch (text/plain) can't send it without a
     // CORS preflight, which this route only answers for `corsOrigin`.
-    if (req.method === "POST" && !(req.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
+    if (req.method === "POST" && !isJsonRequest(req)) {
       return json({ error: "Send JSON (content-type: application/json)." }, 415);
     }
 
@@ -101,8 +102,9 @@ export function createAgentHandler<C = unknown>(options: AgentHandlerOptions<C>)
       return json({ error: e instanceof BadRequest ? e.message : "The request body must be JSON." }, status);
     }
 
-    // A confirm click spends no model credit, so only typed turns count against the limit.
-    if (!body.confirmToken) {
+    // A confirm click spends no model credit, so only typed turns count against the limit. Only
+    // a token-shaped string is a click: anything else would be a free pass past the limit.
+    if (!isTokenShaped(body.confirmToken)) {
       const decision = await limiter(user, req);
       if (!decision.ok) {
         const retry = Math.max(1, Math.ceil(decision.retryAfterSeconds ?? 60));
@@ -242,6 +244,7 @@ async function readBody(req: Request, maxBytes: number): Promise<AgentTurnReques
     if (typeof p.url === "string") page.url = p.url.slice(0, 2000);
     if (typeof p.title === "string") page.title = p.title.slice(0, 300);
     if (p.state && typeof p.state === "object" && !Array.isArray(p.state)) page.state = p.state;
+    if (p.untrusted === true) page.untrusted = true;
   }
   const caps = Array.isArray(raw.clientCapabilities)
     ? raw.clientCapabilities.filter((c: unknown): c is string => typeof c === "string" && c.length <= 40).slice(0, 16)

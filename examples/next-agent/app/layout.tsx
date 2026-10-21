@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { paAnchor } from "@page-assistant/react";
+// The /anchors entry is safe in a server component; the main entry pulls in client code.
+import { paAnchor } from "@page-assistant/react/anchors";
 import { Assistant } from "@/components/Assistant";
 
 export const metadata = { title: "Notes — Agent mode example" };

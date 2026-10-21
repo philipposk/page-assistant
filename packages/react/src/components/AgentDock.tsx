@@ -12,7 +12,7 @@ import { fetchIntro } from "../chat/client.js";
 import { localChatHistory, type ChatHistoryAdapter } from "../chat/history.js";
 import { useAgentChat, type UseAgentChatOptions } from "../chat/useAgentChat.js";
 import { useVoice, type VoiceOptions } from "../chat/useVoice.js";
-import { MAX_MESSAGE_CHARS, type AgentTurnResponse, type ResultCard, type Suggestion } from "../protocol.js";
+import { MAX_MESSAGE_CHARS, type AgentTurnResponse, type PendingActionCard as PendingActionCardData, type ResultCard, type Suggestion } from "../protocol.js";
 import { cardOnArrival, PendingActionCard } from "./PendingActionCard.js";
 import { Composer, HistoryPanel, MessageList, SuggestionChips, ThinkingIndicator } from "./parts.js";
 import { DOCK_CSS } from "./styles.js";
@@ -20,10 +20,14 @@ import { DOCK_CSS } from "./styles.js";
 export interface AgentDockProps extends Omit<UseAgentChatOptions, "onReply" | "history"> {
   /**
    * Saved chats: a ChatHistoryAdapter (e.g. supabaseChatHistoryAdapter), "local" (this device,
-   * the default) or false (this visit only).
+   * the default; needs `userId`, and is off without it) or false (this visit only).
    */
   history?: ChatHistoryAdapter | "local" | false;
-  /** Keys device-only chats per user, so two people on one browser don't share them. */
+  /**
+   * The signed-in user's id. Keys device-only chats per user, so two people on one browser
+   * don't share them; without it "local" saves nothing (one shared slot would show a chat to
+   * whoever signs in next). When it changes the open chat is cleared.
+   */
   userId?: string | null;
   /** Your router's push (Next.js: `router.push`). Default: a full page load. */
   navigate?: (path: string) => void;
@@ -97,11 +101,11 @@ export function AgentDock(props: AgentDockProps) {
   const [remoteIntro, setRemoteIntro] = useState<{ name: string | null; text?: string; chips: Array<{ label: string; prompt: string }> } | null>(null);
 
   const adapter = useMemo<ChatHistoryAdapter | null>(
-    () => (history === false ? null : history === "local" ? localChatHistory({ userId }) : history),
+    () => (history === false ? null : history === "local" ? (userId ? localChatHistory({ userId }) : null) : history),
     [history, userId]
   );
   const voiceOpts = useMemo(() => voiceOptions(voice, transport.endpoint), [voice, transport.endpoint]);
-  const v = useVoice(voiceOpts, transport);
+  const v = useVoice(voiceOpts, transport, open);
   const vRef = useRef(v);
   vRef.current = v;
 
@@ -131,9 +135,24 @@ export function AgentDock(props: AgentDockProps) {
     void runnerRef.current.run(reply.uiActions, reply.uiActionMode);
   }, []);
 
-  const chat = useAgentChat({ ...transport, history: adapter, onReply });
+  const chat = useAgentChat({ ...transport, history: adapter, historyKey: userId ?? null, onReply });
   chatRef.current = chat;
-  const card = chat.pendingAction ? cardOnArrival(chat.pendingAction) : null;
+  // Worked out once per card: doing it every render would push an "already expired" card's
+  // deadline forward each time and it would never lapse.
+  const arrived = useRef<{ from: PendingActionCardData; card: PendingActionCardData } | null>(null);
+  if (!chat.pendingAction) arrived.current = null;
+  else if (arrived.current?.from !== chat.pendingAction) arrived.current = { from: chat.pendingAction, card: cardOnArrival(chat.pendingAction) };
+  const card = arrived.current?.card ?? null;
+
+  // A different person signed in: stop what the last one started and close their chat list.
+  const lastUser = useRef(userId);
+  useEffect(() => {
+    if (lastUser.current === userId) return;
+    lastUser.current = userId;
+    runnerRef.current.cancel();
+    setShowHistory(false);
+    setInject(null);
+  }, [userId]);
 
   useEffect(() => {
     if (!open || remoteIntro || (intro && starterChips)) return;

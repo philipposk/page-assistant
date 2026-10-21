@@ -79,6 +79,9 @@ Scanned page text and `knowledgeUrl` content enter the system prompt. Mitigation
   tools are refused or turned into a card (`confirmWhenTainted`), and the reply's markdown is
   cleaned: no images, raw HTML or in-text links except addresses a tool result wrote word for
   word (a planted link could carry data out). The cleaner is linear-time and capped at 50 KB.
+  The page itself can carry someone else's words too (a shared document's title, a crafted
+  link): the query string never reaches the model, and a host whose pages show other people's
+  text sets `pageContext: "untrusted"` (or `untrusted: true` from the dock's `getPage`).
 - **CSRF**: the agent and voice routes take JSON only and refuse requests from another site
   (`Sec-Fetch-Site`, else `Origin` vs host), unless `corsOrigin` names that origin. Sibling apps
   on one domain share cookies (`SameSite=Lax`), so this matters on `*.6x7.gr`.

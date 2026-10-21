@@ -205,8 +205,13 @@ export interface LLMCompletionInput {
 }
 
 export interface LLMTokenUsage {
+  /** Whole prompt size; for a provider with prompt caching this includes cached tokens. */
   promptTokens?: number;
   completionTokens?: number;
+  /** Of `promptTokens`, how many were read from the prompt cache (when the provider says). */
+  cacheReadTokens?: number;
+  /** Of `promptTokens`, how many were written to the prompt cache (when the provider says). */
+  cacheCreationTokens?: number;
 }
 
 export interface LLMCompletionOutput {
