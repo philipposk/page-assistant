@@ -30,8 +30,13 @@ create table if not exists public.assistant_pending_actions (
   details     jsonb       not null default '[]'::jsonb check (jsonb_typeof(details) = 'array'),
   created_at  timestamptz not null default now(),
   expires_at  timestamptz not null,
+  -- The card was offered after the assistant read someone else's text; its run is guarded too.
+  tainted     boolean     not null default false,
   check (expires_at > created_at and expires_at <= created_at + interval '1 day')
 );
+
+-- For a table made by an earlier copy of this file.
+alter table public.assistant_pending_actions add column if not exists tainted boolean not null default false;
 
 -- The sweep.
 create index if not exists assistant_pending_actions_expires_idx

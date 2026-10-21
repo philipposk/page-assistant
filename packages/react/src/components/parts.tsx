@@ -76,7 +76,7 @@ export function MessageList({ lines, onNavigate, onRetry, renderCard, busy, foot
       {lines.map((l) => (
         <div key={l.id} className={`pa-agent-msg pa-agent-msg-${l.role} pa-agent-msg-${l.kind ?? "turn"}`}>
           <div className="pa-agent-bubble">
-            {l.role === "user" ? <p className="pa-agent-user-text">{l.content}</p> : <Markdown text={l.content} onNavigate={onNavigate} />}
+            {l.role === "user" ? <p className="pa-agent-user-text">{l.content}</p> : <Markdown text={l.content} onNavigate={onNavigate} untrusted={l.tainted === true} />}
             {l.cards?.length && renderCard ? <div className="pa-agent-cards">{l.cards.map((c, i) => <div key={i}>{renderCard(c)}</div>)}</div> : null}
             {l.note ? <p className="pa-agent-note">{l.note}</p> : null}
             {l.retry && l.id === lastId ? (

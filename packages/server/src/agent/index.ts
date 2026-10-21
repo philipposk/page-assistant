@@ -19,7 +19,7 @@ export { schemaProblem } from "./schema.js";
 export { readLimited, crossSiteRefusal, isJsonRequest } from "./http.js";
 export { historyForLlm, selectHistory, classifyLlmError, DEFAULT_AGENT_MODEL, DEFAULT_FALLBACK_MODEL, resetModelUnavailable } from "./llm.js";
 export { validateAgentText } from "./validator.js";
-export { cleanMarkdown, urlsIn, FAILURE_MESSAGES, WRITE_REFUSAL } from "./text.js";
+export { cleanMarkdown, canonicalUrl, urlsIn, FAILURE_MESSAGES, WRITE_REFUSAL } from "./text.js";
 export * from "./types.js";
 
 import type { AgentTool } from "./types.js";

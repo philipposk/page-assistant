@@ -1,5 +1,5 @@
 import { MODEL_DEFAULTS, type LLMProvider, type LLMCompletionInput, type LLMCompletionOutput, type ChatMessage } from "@page-assistant/core";
-import { fetchWithRetry, llmTimeoutMs, maxTokens } from "./fetchWithRetry.js";
+import { defaultMaxTokens, fetchWithRetry, llmTimeoutMs } from "./fetchWithRetry.js";
 import { HttpProviderError } from "./errors.js";
 import { acceptsForcedTool, acceptsSampling, claudeIdFromOpenRouter, isOpenAIReasoningModel, thinksByDefault } from "./modelRules.js";
 
@@ -34,7 +34,7 @@ export function openaiProvider(opts: { apiKey: string; model?: string; baseUrl?:
       // model that reasons first spends the cap on that too, so with no cap named it gets room
       // and is asked to reason little; a caller that names maxTokens or effort keeps its own.
       const unsetCap = input.maxTokens === undefined;
-      const cap = input.maxTokens ?? (thinks ? Math.max(maxTokens(), THINKING_MIN_MAX_TOKENS) : maxTokens());
+      const cap = input.maxTokens ?? defaultMaxTokens(thinks, THINKING_MIN_MAX_TOKENS);
       const effort = input.effort ?? (thinks && unsetCap ? "low" : undefined);
       const body: any = {
         model,

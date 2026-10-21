@@ -24,7 +24,7 @@ import {
   type CallState,
 } from "./llm.js";
 import { MemoryPendingActionStore, hashToken, DEFAULT_PENDING_TTL_MS } from "./pending.js";
-import { AgentToolRegistry, chains, riskOf, ToolRegistryError, type StepResult } from "./registry.js";
+import { ABORTED, AgentToolRegistry, chains, riskOf, ToolRegistryError, untilAborted, type StepResult } from "./registry.js";
 import {
   CARD_STOPS_THE_TURN,
   CONFIRM_EXPIRED_MESSAGE,
@@ -33,8 +33,10 @@ import {
   REFUSAL_MESSAGE,
   STOPPED_AFTER_STEPS,
   TEXT_CARD_STOPS_THE_TURN,
+  TOOL_TIMEOUT_MESSAGE,
   TOO_MANY_STEPS_MESSAGE,
   UNVERIFIED_NUMBERS_MESSAGE,
+  canonicalUrl,
   cleanMarkdown,
   failureMessage,
   formatValue,
@@ -83,8 +85,13 @@ function keepUrlsFrom(sources: FactSource[]): Set<string> {
   const keep = new Set<string>();
   for (const s of sources) {
     if (BUILTIN_TOOLS.has(s.tool.name)) continue;
-    const fromArgs = urlsIn(s.args ?? {});
-    for (const u of urlsIn(s.value)) if (!fromArgs.has(u)) keep.add(u);
+    // Compared in one spelling: a tool that tidies an address it was given
+    // (`HTTPS://EVIL.com` → `https://evil.com/`) must not turn it into one it wrote.
+    const fromArgs = new Set([...urlsIn(s.args ?? {})].map(canonicalUrl));
+    for (const u of urlsIn(s.value)) {
+      const c = canonicalUrl(u);
+      if (!fromArgs.has(c)) keep.add(c);
+    }
   }
   return keep;
 }
@@ -171,11 +178,19 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
     // The stored arguments are everything the action gets: the page may have changed since the
     // card (other rows selected), and the card showed what will happen.
     const ctx = makeContext({ ...req, page: {} }, user, app, signal);
-    const row = await store.consume(await hashToken(String(req.confirmToken)), user.id, new Date());
+    const consumed = await untilAborted(store.consume(await hashToken(String(req.confirmToken)), user.id, new Date()), signal);
+    if (consumed === ABORTED) {
+      await report(info(user, "confirm_failed", [], 0, undefined, null, started));
+      return response({ message: TOOL_TIMEOUT_MESSAGE, chatId: req.chatId });
+    }
+    const row = consumed;
     if (!row) {
       await report(info(user, "confirm_expired", [], 0, undefined, null, started));
       return response({ message: CONFIRM_EXPIRED_MESSAGE, chatId: req.chatId });
     }
+    // A card offered after reading someone else's text keeps that turn's guard: its run's
+    // output is cleaned and the reply tagged, whatever the tool.
+    if (row.tainted === true) ctx.tainted = true;
     const step = await registry.runConfirmed(row.tool, row.args, ctx);
     const tool = registry.get(row.tool);
     let message: string;
@@ -184,7 +199,8 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
     else message = say(tool.render ? safeRender(tool, step.value, row.args) : "Done.");
     // A confirmed read of someone else's text is cleaned like any tainted output.
     if (ctx.tainted && tool) message = cleanMarkdown(message, { keepUrls: keepUrlsFrom(step.ok ? [{ tool, value: step.value, args: row.args }] : []) });
-    const uiActions = step.ok && tool?.uiActions ? coerceUiActions(safeCall(() => tool.uiActions!(step.value, row.args)), rules) : [];
+    let uiActions = step.ok && tool?.uiActions ? coerceUiActions(safeCall(() => tool.uiActions!(step.value, row.args)), rules) : [];
+    if (ctx.tainted && tool) uiActions = cleanNarration(uiActions, keepUrlsFrom(step.ok ? [{ tool, value: step.value, args: row.args }] : []));
     const cards = step.ok && tool?.cards && declared(req, "result_cards") ? cardsFrom(safeCall(() => tool.cards!(step.value, row.args))) : [];
     await report(info(user, step.ok ? "confirmed" : "confirmed_failed", [{ name: row.tool, ok: step.ok, risk: tool ? riskOf(tool) : "confirm" }], 0, undefined, null, started));
     return response({ message, uiActions, uiActionMode: tool?.uiActionMode ?? "immediate", cards, chatId: req.chatId, tainted: ctx.tainted });
@@ -285,7 +301,7 @@ export function createAgent<C = unknown>(config: AgentConfig<C>): Agent<C> {
       await report(info(user, outcome, ran, rounds, state, errorCode, started));
       return response({
         message: text,
-        uiActions,
+        uiActions: ctx.tainted ? cleanNarration(uiActions, keepUrlsFrom(factSources)) : uiActions,
         uiActionMode,
         pendingAction,
         suggestions,
@@ -494,8 +510,30 @@ function makeContext<C>(req: AgentTurnRequest, user: AgentUser, app: C, signal: 
   return { user, app, request: req, page: req.page ?? {}, tainted: false, confirmed: false, signal };
 }
 
+/** Narration shows in the chat as markdown, so in a tainted turn it is cleaned like a reply. */
+function cleanNarration(actions: UiAction[], keepUrls: ReadonlySet<string>): UiAction[] {
+  return actions.map((a) => (a.type === "narrate" && typeof a.text === "string" ? { ...a, text: cleanMarkdown(a.text, { keepUrls }) } : a));
+}
+
 function pageHasContent(page: AgentTurnRequest["page"]): boolean {
-  return !!page && (!!page.title || (!!page.state && Object.keys(page.state).length > 0));
+  if (!page) return false;
+  const path = page.path ? pathForModel(String(page.path)) : "";
+  return !!page.title || (!!page.state && Object.keys(page.state).length > 0) || (path !== "" && path !== "/");
+}
+
+// A path segment the model may read as it is: a word, a short slug (up to three parts), a
+// number or a UUID. Anything longer or odder is someone's words as easily as an id (a crafted
+// `/notes/IGNORE%20PREVIOUS%20INSTRUCTIONS…`) and reaches the model as ":param".
+const PLAIN_SEGMENT = /^(?:[A-Za-z0-9]{1,40}|[A-Za-z0-9]{1,20}(?:[-_.][A-Za-z0-9]{1,20}){1,2}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+
+/** The page path as the model sees it: no query string or fragment, odd segments masked. */
+export function pathForModel(path: string): string {
+  const bare = path.split(/[?#]/)[0].slice(0, 500);
+  return bare
+    .split("/")
+    .slice(0, 12)
+    .map((seg) => (seg === "" || PLAIN_SEGMENT.test(seg) ? seg : ":param"))
+    .join("/");
 }
 
 function declared(req: AgentTurnRequest, cap: string): boolean {
@@ -541,7 +579,12 @@ function info(
     rounds,
     model: state?.servedModel ?? state?.model,
     provider: state?.provider,
-    usage: { promptTokens: state?.promptTokens ?? 0, completionTokens: state?.completionTokens ?? 0 },
+    usage: {
+      promptTokens: state?.promptTokens ?? 0,
+      completionTokens: state?.completionTokens ?? 0,
+      ...(state?.cacheReadTokens ? { cacheReadTokens: state.cacheReadTokens } : {}),
+      ...(state?.cacheCreationTokens ? { cacheCreationTokens: state.cacheCreationTokens } : {}),
+    },
     errorCode,
     ms: Date.now() - started,
   };
@@ -625,7 +668,7 @@ function userContent(req: AgentTurnRequest, message: string, forced: AgentTool |
   const page = req.page ?? {};
   const view: Record<string, unknown> = {};
   // The path only: a query string is the easiest place for someone else's words (a crafted link).
-  if (page.path) view.path = String(page.path).split(/[?#]/)[0].slice(0, 500);
+  if (page.path) view.path = pathForModel(String(page.path));
   if (page.title) view.title = String(page.title).slice(0, 200);
   if (page.state && typeof page.state === "object") view.state = page.state;
   let pageJson = safeJson(view, 4001) || "{}";

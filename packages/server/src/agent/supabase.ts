@@ -33,6 +33,7 @@ interface Row {
   details: string[];
   created_at: string;
   expires_at: string;
+  tainted?: boolean | null;
 }
 
 const fromRow = (r: Row): PendingActionRecord => ({
@@ -44,6 +45,7 @@ const fromRow = (r: Row): PendingActionRecord => ({
   details: Array.isArray(r.details) ? r.details : [],
   createdAt: r.created_at,
   expiresAt: r.expires_at,
+  ...(r.tainted === true ? { tainted: true } : {}),
 });
 
 export function supabasePendingActionStore(client: SupabaseLikeClient, opts: SupabasePendingActionOptions): PendingActionStore {
@@ -68,6 +70,7 @@ export function supabasePendingActionStore(client: SupabaseLikeClient, opts: Sup
           details: r.details,
           created_at: r.createdAt,
           expires_at: r.expiresAt,
+          tainted: r.tainted === true,
         })
       );
     },

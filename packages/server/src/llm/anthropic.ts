@@ -1,5 +1,5 @@
 import { MODEL_DEFAULTS, type LLMProvider, type LLMCompletionInput, type LLMCompletionOutput, type ChatMessage } from "@page-assistant/core";
-import { fetchWithRetry, llmTimeoutMs, maxTokens } from "./fetchWithRetry.js";
+import { defaultMaxTokens, fetchWithRetry, llmTimeoutMs } from "./fetchWithRetry.js";
 import { HttpProviderError } from "./errors.js";
 import { acceptsEffort, acceptsForcedTool, acceptsSampling, claudeIdFromOpenRouter, thinksByDefault } from "./modelRules.js";
 
@@ -40,7 +40,7 @@ export function anthropicProvider(opts: {
       const unsetCap = input.maxTokens === undefined;
       const body: any = {
         model,
-        max_tokens: input.maxTokens ?? (thinks ? Math.max(maxTokens(), THINKING_MIN_MAX_TOKENS) : maxTokens()),
+        max_tokens: input.maxTokens ?? defaultMaxTokens(thinks, THINKING_MIN_MAX_TOKENS),
         system: input.system,
         messages: toAnthropicMessages(input.messages, providerName),
         tools,

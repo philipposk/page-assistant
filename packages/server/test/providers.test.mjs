@@ -275,33 +275,41 @@ test("router: a request that would fail anywhere (malformed, too large) is not s
 });
 
 test("router: a timeout is not started again elsewhere; the chain shares one time budget", async () => {
-  await withHosts(
-    {
-      "api.anthropic.com": (init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
-      "api.openai.com": OPENAI_OK,
-    },
-    async (calls) => {
-      await assert.rejects(routerFromEnv(BOTH).complete({ ...input, timeoutMs: 50 }), /timeout|All LLM providers failed/i);
-      assert.deepEqual(calls.map((c) => c.host), ["api.anthropic.com"], "the timed-out request may still be billing");
-    }
-  );
-  // A fast failure leaves most of the budget; the fallback gets what is left, not a fresh one.
-  await withHosts({ "api.anthropic.com": json(529, { error: { message: "overloaded" } }), "api.openai.com": OPENAI_OK }, async (calls) => {
-    const out = await routerFromEnv(BOTH).complete({ ...input, timeoutMs: 10_000 });
-    assert.equal(out.text, "from openai");
-    assert.equal(calls.length, 2);
-  });
-  // Too little left: no fallback is started only to be cut off.
-  await withHosts(
-    {
-      "api.anthropic.com": () => new Promise((r) => setTimeout(() => r(new Response("{}", { status: 503 })), 120)),
-      "api.openai.com": OPENAI_OK,
-    },
-    async (calls) => {
-      await assert.rejects(routerFromEnv(BOTH).complete({ ...input, timeoutMs: 2_000 }), AllProvidersFailedError);
-      assert.deepEqual(calls.map((c) => c.host), ["api.anthropic.com"]);
-    }
-  );
+  // The mocked request only settles when AbortSignal.timeout fires, and on Node <= 22 that timer
+  // does not keep the process alive: with nothing else pending the test runner ends the test
+  // as "still pending" before the abort lands. Hold the event loop open for this test.
+  const alive = setInterval(() => {}, 60_000);
+  try {
+    await withHosts(
+      {
+        "api.anthropic.com": (init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
+        "api.openai.com": OPENAI_OK,
+      },
+      async (calls) => {
+        await assert.rejects(routerFromEnv(BOTH).complete({ ...input, timeoutMs: 50 }), /timeout|All LLM providers failed/i);
+        assert.deepEqual(calls.map((c) => c.host), ["api.anthropic.com"], "the timed-out request may still be billing");
+      }
+    );
+    // A fast failure leaves most of the budget; the fallback gets what is left, not a fresh one.
+    await withHosts({ "api.anthropic.com": json(529, { error: { message: "overloaded" } }), "api.openai.com": OPENAI_OK }, async (calls) => {
+      const out = await routerFromEnv(BOTH).complete({ ...input, timeoutMs: 10_000 });
+      assert.equal(out.text, "from openai");
+      assert.equal(calls.length, 2);
+    });
+    // Too little left: no fallback is started only to be cut off.
+    await withHosts(
+      {
+        "api.anthropic.com": () => new Promise((r) => setTimeout(() => r(new Response("{}", { status: 503 })), 120)),
+        "api.openai.com": OPENAI_OK,
+      },
+      async (calls) => {
+        await assert.rejects(routerFromEnv(BOTH).complete({ ...input, timeoutMs: 2_000 }), AllProvidersFailedError);
+        assert.deepEqual(calls.map((c) => c.host), ["api.anthropic.com"]);
+      }
+    );
+  } finally {
+    clearInterval(alive);
+  }
 });
 
 test("classifyLlmError reads a failed chain by its first provider, retrying when any failure was passing", () => {
@@ -354,4 +362,23 @@ test("OpenAI request bodies: reasoning models, OpenRouter Claude, and the plain 
 test("every default and picker model comes from core's one list", () => {
   assert.equal(AVAILABLE_MODELS, MODEL_CATALOG);
   assert.ok(!Object.values(MODEL_DEFAULTS).includes("anthropic/claude-3.5-haiku"));
+});
+
+test("an operator's lower PA_MAX_TOKENS is a spend cap, kept even for a model that thinks", async () => {
+  const prev = process.env.PA_MAX_TOKENS;
+  process.env.PA_MAX_TOKENS = "800";
+  try {
+    await withAnthropic(OK, async (seen) => {
+      await ask("claude-haiku-5-5");
+      assert.equal(seen.body.max_tokens, 800);
+    });
+    let sent;
+    await withHosts({ "openrouter.ai": (i) => ((sent = JSON.parse(i.body)), OPENAI_OK()) }, async () => {
+      await openaiProvider({ apiKey: "k", baseUrl: "https://openrouter.ai/api/v1", model: "anthropic/claude-opus-5.5" }).complete(input);
+    });
+    assert.equal(sent.max_tokens, 800);
+  } finally {
+    if (prev === undefined) delete process.env.PA_MAX_TOKENS;
+    else process.env.PA_MAX_TOKENS = prev;
+  }
 });

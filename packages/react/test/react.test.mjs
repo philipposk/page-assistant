@@ -402,12 +402,46 @@ test("a link address with markup in it is not a link, so no second link can hide
     "**[a](/x**[b](https://evil.com/?d=SECRET)",
     "[a](/x\"y) [b](/x'y) [c](/x<y) [d](/x\\y)",
   ]) {
-    const html = renderToString(h(Markdown, { text }));
+    const html = renderToString(h(Markdown, { text, untrusted: true }));
     assert.doesNotMatch(html, /evil\.com/, text);
     assert.doesNotMatch(html, /<a /, text);
   }
-  const ok = renderToString(h(Markdown, { text: "[fine](/items) and [ext](https://good.example/p?a=1)" }));
+  const ok = renderToString(h(Markdown, { text: "[fine](/items) and [ext](https://good.example/p?a=1)", untrusted: true }));
   assert.equal((ok.match(/<a /g) ?? []).length, 2);
+});
+
+test("the strict link rule is for tainted replies only: an ordinary reply keeps a link with a quote in it", () => {
+  const text = "[post](https://site.example/it's)";
+  assert.match(renderToString(h(Markdown, { text })), /<a [^>]*href="https:\/\/site\.example\/it&#x27;s"/);
+  assert.doesNotMatch(renderToString(h(Markdown, { text, untrusted: true })), /<a /);
+});
+
+test("a link never spans a list item's line break (the server reads links line by line)", () => {
+  for (const untrusted of [false, true]) {
+    for (const text of ["- [Re-login\n  ](https://evil.com/?d=S3CR3T)", "1. a [x\n   ](https://evil.com/?d=S)", "- ok\n  [y](https://evil.com/?d=S) z"]) {
+      const html = renderToString(h(Markdown, { text, untrusted }));
+      if (text.includes("[y]")) assert.match(html, /evil\.com/, "a whole link on one line still renders");
+      else assert.doesNotMatch(html, /href="https:\/\/evil/, text);
+    }
+  }
+  const parsed = parseBlocks("- a\n  b\n- c");
+  assert.deepEqual(parsed[0].items, [["a", "b"], ["c"]]);
+});
+
+test("fuzz: nothing the server's cleaner lets through renders as a link it dropped", async () => {
+  const { cleanMarkdown } = await import("../../server/dist/agent/index.js");
+  const keep = new Set(["https://good.com/a"]);
+  const T = ["[", "]", "(", ")", "\\", "`", "*", "**", "_", "__", "[a](/x", "[a](/x)", "](https://evil.com/?d=S)", "[b](https://evil.com/?d=S)", "(https://evil.com/?d=S)", "https://evil.com/?d=S", "[g](https://good.com/a)", "](", " ", "\n", "\n  ", "\n- ", "- ", "1. ", '"t"', "<", "!", "a", "```", "\n\n", "[a", "\\["];
+  let seed = 12345;
+  const rnd = (n) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), seed % n);
+  for (let i = 0; i < 20_000; i++) {
+    let src = rnd(3) === 0 ? "- " : "";
+    for (let j = 3 + rnd(12); j > 0; j--) src += T[rnd(T.length)];
+    const cleaned = cleanMarkdown(src, { keepUrls: keep });
+    if (!cleaned.includes("evil.com")) continue;
+    const html = renderToString(h(Markdown, { text: cleaned, untrusted: true }));
+    assert.doesNotMatch(html, /href="https:\/\/evil/, JSON.stringify(src));
+  }
 });
 
 // --- review fixes: chat rules ------------------------------------------------------------------

