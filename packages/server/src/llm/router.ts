@@ -101,15 +101,20 @@ function buildChain(env: NodeJS.ProcessEnv): LLMProvider[] {
   const chain: LLMProvider[] = [];
   if (env.ANTHROPIC_API_KEY) chain.push(anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model: env.PA_ANTHROPIC_MODEL }));
   if (env.OPENAI_API_KEY) chain.push(openaiProvider({ apiKey: env.OPENAI_API_KEY, model: env.PA_OPENAI_MODEL }));
-  if (env.OPENROUTER_API_KEY)
-    chain.push(
-      openaiProvider({
-        apiKey: env.OPENROUTER_API_KEY,
-        baseUrl: "https://openrouter.ai/api/v1",
-        model: env.PA_OPENROUTER_MODEL ?? "anthropic/claude-3.5-haiku",
-      })
-    );
+  if (env.OPENROUTER_API_KEY) chain.push(openRouterProvider(env.OPENROUTER_API_KEY, env.PA_OPENROUTER_MODEL ?? "anthropic/claude-3.5-haiku"));
   return chain;
+}
+
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * OpenRouter speaks both formats. Its Claude models go through the Anthropic-format endpoint
+ * (`/messages`), so thinking blocks survive between tool rounds and the model rules for
+ * temperature and forced tool_choice apply; every other model uses chat completions.
+ */
+function openRouterProvider(apiKey: string, model: string): LLMProvider {
+  if (/^~?anthropic\//i.test(model.trim())) return anthropicProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, auth: "bearer", model });
+  return openaiProvider({ apiKey, baseUrl: OPENROUTER_BASE_URL, model });
 }
 
 function providerForModel(model: string, env: NodeJS.ProcessEnv): LLMProvider | null {
@@ -118,7 +123,7 @@ function providerForModel(model: string, env: NodeJS.ProcessEnv): LLMProvider | 
     return anthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, model });
   }
   if (lower.includes("/") && env.OPENROUTER_API_KEY) {
-    return openaiProvider({ apiKey: env.OPENROUTER_API_KEY, baseUrl: "https://openrouter.ai/api/v1", model });
+    return openRouterProvider(env.OPENROUTER_API_KEY, model);
   }
   if (env.OPENAI_API_KEY) {
     return openaiProvider({ apiKey: env.OPENAI_API_KEY, model });

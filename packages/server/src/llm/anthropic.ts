@@ -3,12 +3,25 @@ import { fetchWithRetry, llmTimeoutMs, maxTokens } from "./fetchWithRetry.js";
 import { HttpProviderError } from "./errors.js";
 import { acceptsEffort, acceptsForcedTool, acceptsSampling } from "./modelRules.js";
 
-/** Anthropic Messages API provider with tool calling. */
-export function anthropicProvider(opts: { apiKey: string; model?: string }): LLMProvider {
+/**
+ * Anthropic Messages API provider with tool calling. `baseUrl` points it at another endpoint
+ * that speaks the same format, such as OpenRouter's (`https://openrouter.ai/api/v1`, model ids
+ * like `anthropic/claude-haiku-5.5`), which takes the key as a bearer token.
+ */
+export function anthropicProvider(opts: {
+  apiKey: string;
+  model?: string;
+  baseUrl?: string;
+  /** How the key is sent. Default: `bearer` for OpenRouter, `x-api-key` otherwise. */
+  auth?: "x-api-key" | "bearer";
+}): LLMProvider {
   // The alias, not a dated snapshot id. Lite stays on Haiku 4.5; Agent mode passes claude-haiku-5-5.
   const model = opts.model ?? "claude-haiku-4-5";
+  const baseUrl = (opts.baseUrl ?? "https://api.anthropic.com/v1").replace(/\/+$/, "");
+  const providerName = baseUrl.includes("openrouter") ? "openrouter" : "anthropic";
+  const auth = opts.auth ?? (providerName === "openrouter" ? "bearer" : "x-api-key");
   return {
-    name: "anthropic",
+    name: providerName,
     async complete(input: LLMCompletionInput): Promise<LLMCompletionOutput> {
       const tools = (input.tools ?? []).map((t) => ({
         name: t.name,
@@ -19,7 +32,7 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
         model,
         max_tokens: input.maxTokens ?? maxTokens(),
         system: input.system,
-        messages: toAnthropicMessages(input.messages),
+        messages: toAnthropicMessages(input.messages, providerName),
         tools,
       };
       // Newer models answer a non-default temperature with a 400, so it is only sent where taken.
@@ -30,12 +43,12 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
       if (input.promptCache) body.cache_control = { type: "ephemeral" };
 
       const res = await fetchWithRetry(
-        "https://api.anthropic.com/v1/messages",
+        `${baseUrl}/messages`,
         {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-api-key": opts.apiKey,
+            ...(auth === "bearer" ? { authorization: `Bearer ${opts.apiKey}` } : { "x-api-key": opts.apiKey }),
             "anthropic-version": "2023-06-01",
           },
           body: JSON.stringify(body),
@@ -44,7 +57,7 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
       );
       if (!res.ok) {
         // Keep the raw provider body server-side only; surface a clean typed error.
-        throw new HttpProviderError("anthropic", res.status, await safeText(res));
+        throw new HttpProviderError(providerName, res.status, await safeText(res));
       }
       const data: any = await res.json();
       const toolCalls: LLMCompletionOutput["toolCalls"] = [];
@@ -61,7 +74,7 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
         toolCalls,
         text: text.trim(),
         usage,
-        provider: "anthropic",
+        provider: providerName,
         model: typeof data.model === "string" ? data.model : model,
         stopReason: typeof data.stop_reason === "string" ? data.stop_reason : undefined,
         // The whole content (thinking blocks included) so a tool round can hand it back as is.
@@ -77,14 +90,15 @@ export function anthropicProvider(opts: { apiKey: string; model?: string }): LLM
  * id. This lets the model recognize the calls it actually made instead of seeing bare
  * "[result of X]" user text it has no record of requesting.
  */
-function toAnthropicMessages(messages: ChatMessage[]) {
+function toAnthropicMessages(messages: ChatMessage[], providerName: string) {
   const out: any[] = [];
   for (const m of messages) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content });
     } else if (m.role === "assistant") {
       // A model with thinking on needs its own blocks back, unchanged, with the tool results.
-      if (m.providerContent?.provider === "anthropic" && Array.isArray(m.providerContent.content)) {
+      // Only to the endpoint that wrote them: a thinking signature is not valid elsewhere.
+      if (m.providerContent?.provider === providerName && Array.isArray(m.providerContent.content)) {
         out.push({ role: "assistant", content: m.providerContent.content });
       } else if (m.toolCalls?.length) {
         const content: any[] = [];

@@ -4,10 +4,21 @@
  * provider leaves out what a model does not take instead of sending it and failing.
  *
  * Ids are matched by family and version, so a dated id (`claude-haiku-4-5-20251001`) is
- * read the same as its alias.
+ * read the same as its alias, and so is OpenRouter's name for the model
+ * (`anthropic/claude-haiku-5.5`, older ones version first: `anthropic/claude-3.5-haiku`).
  */
 
-const id = (model: string) => model.trim().toLowerCase();
+const id = (model: string) =>
+  model
+    .trim()
+    .toLowerCase()
+    .replace(/^~?anthropic\//, "")
+    .replace(/:.*$/, "")
+    .replace(/\./g, "-")
+    .replace(/^claude-(\d+(?:-\d+)?)-(opus|sonnet|haiku)\b/, "claude-$2-$1");
+
+/** An alias that moves to each new model (OpenRouter's `~anthropic/claude-opus-latest`). */
+const floating = (m: string) => /-latest$/.test(m);
 
 /**
  * Whether `temperature` may be sent. The 5.x generation and Opus 4.7/4.8 answer a
@@ -16,6 +27,7 @@ const id = (model: string) => model.trim().toLowerCase();
  */
 export function acceptsSampling(model: string): boolean {
   const m = id(model);
+  if (floating(m)) return false;
   if (/^claude-(fable|mythos)/.test(m)) return false;
   if (/^claude-(opus|sonnet|haiku)-5/.test(m)) return false;
   if (/^claude-opus-4-[78]/.test(m)) return false;
@@ -30,6 +42,7 @@ export function acceptsSampling(model: string): boolean {
  */
 export function acceptsForcedTool(model: string): boolean {
   const m = id(model);
+  if (floating(m)) return false;
   if (/^claude-(fable|mythos)-5-[1-9]/.test(m)) return false;
   if (/^claude-(fable|mythos)-[6-9]/.test(m)) return false;
   if (/^claude-(opus|sonnet)-5-[5-9]/.test(m)) return false;
