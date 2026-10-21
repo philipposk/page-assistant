@@ -134,6 +134,8 @@ export interface CallState {
   deadline: number;
   promptTokens: number;
   completionTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   provider?: string;
   servedModel?: string;
   /** The turn's signal (Stop, client gone, deadline). Cancels the HTTP request in flight. */
@@ -238,6 +240,8 @@ async function callWithRetry(
       const out = await withHardStop(provider.complete(call), timeoutMs + HARD_STOP_MARGIN_MS, callAbort);
       state.promptTokens += out.usage?.promptTokens ?? 0;
       state.completionTokens += out.usage?.completionTokens ?? 0;
+      if (out.usage?.cacheReadTokens) state.cacheReadTokens = (state.cacheReadTokens ?? 0) + out.usage.cacheReadTokens;
+      if (out.usage?.cacheCreationTokens) state.cacheCreationTokens = (state.cacheCreationTokens ?? 0) + out.usage.cacheCreationTokens;
       if (out.provider) state.provider = out.provider;
       if (out.model) state.servedModel = out.model;
       return out;

@@ -89,3 +89,13 @@ export function voiceTimeoutMs(): number {
 export function maxTokens(): number {
   return envInt("PA_MAX_TOKENS", 1024, { min: 1 });
 }
+
+/**
+ * The output cap when the caller names none. A model that thinks first spends the cap on that
+ * too, so it gets at least `thinkingFloor` — unless the operator set PA_MAX_TOKENS, which is a
+ * spend limit and is kept as set (a reply may then be cut, which is the operator's call).
+ */
+export function defaultMaxTokens(thinks: boolean, thinkingFloor: number): number {
+  const operatorSet = (process.env.PA_MAX_TOKENS ?? "") !== "";
+  return thinks && !operatorSet ? Math.max(maxTokens(), thinkingFloor) : maxTokens();
+}

@@ -69,6 +69,8 @@ export function useVoice(voice: VoiceOptions | null, transport: AgentTransport, 
   const recognition = useRef<Recognition | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const stream = useRef<MediaStream | null>(null);
+  // While the browser asks for the mic: a second click must not start a second recorder.
+  const starting = useRef(false);
   // Bumped each time capture is thrown away; a recording from an older count never uploads.
   const epoch = useRef(0);
   const t = useRef(transport);
@@ -141,12 +143,16 @@ export function useVoice(voice: VoiceOptions | null, transport: AgentTransport, 
       }
       const canRecord = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
       if (voice.sttUrl && canRecord) {
+        if (starting.current) return;
+        starting.current = true;
         const startedAt = epoch.current;
         let media: MediaStream;
         try {
           media = await navigator.mediaDevices.getUserMedia({ audio: true });
         } catch {
           return; // permission refused
+        } finally {
+          starting.current = false;
         }
         if (epoch.current !== startedAt) {
           // The panel closed while the browser was asking: let the mic go straight away.
@@ -160,6 +166,7 @@ export function useVoice(voice: VoiceOptions | null, transport: AgentTransport, 
         rec.onstop = async () => {
           media.getTracks().forEach((tr) => tr.stop());
           if (stream.current === media) stream.current = null;
+          if (recorder.current === rec) recorder.current = null;
           if (epoch.current !== startedAt) return; // thrown away, not sent
           setRecording(false);
           const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });

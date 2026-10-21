@@ -190,7 +190,12 @@ export class AgentToolRegistry<C = unknown> {
       // from arguments can't fail the insert.
       // Hidden characters (bidi overrides, zero-width) go: the card must say what it shows.
       title = clip(stripHidden(title ?? "").trim(), MAX_TITLE_CHARS) || "Go ahead with this?";
-      if (!details) details = spec.details ? await spec.details(finalArgs, ctx) : defaultDetails(tool, spec, finalArgs);
+      if (!details && spec.details) {
+        const d = await untilAborted(Promise.resolve(spec.details(finalArgs, ctx)), ctx.signal);
+        if (d === ABORTED) return fail(TOOL_TIMEOUT_MESSAGE);
+        details = d;
+      }
+      details ??= defaultDetails(tool, spec, finalArgs);
       details = (details ?? []).map((d) => clip(stripHidden(String(d)), MAX_DETAIL_CHARS)).filter(Boolean).slice(0, 20);
       // First, so it shows without scrolling the details.
       if (ctx.tainted && !details.includes(TAINT_NOTE)) details.unshift(TAINT_NOTE);
@@ -198,16 +203,22 @@ export class AgentToolRegistry<C = unknown> {
       const token = newToken();
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.ttlMs).toISOString();
-      await this.store.create({
-        tokenHash: await hashToken(token),
-        userId: ctx.user.id,
-        tool: tool.name,
-        args: finalArgs,
-        title,
-        details,
-        createdAt: now.toISOString(),
-        expiresAt,
-      });
+      const stored = await untilAborted(
+        this.store.create({
+          tokenHash: await hashToken(token),
+          userId: ctx.user.id,
+          tool: tool.name,
+          args: finalArgs,
+          title,
+          details,
+          createdAt: now.toISOString(),
+          expiresAt,
+          ...(ctx.tainted ? { tainted: true } : {}),
+        }),
+        ctx.signal
+      );
+      // A card the store may never have kept is not shown: its click could find nothing.
+      if (stored === ABORTED) return fail(TOOL_TIMEOUT_MESSAGE);
       const card: PendingActionCard = {
         token,
         tool: tool.name,
@@ -236,10 +247,10 @@ function fail(error: string): StepResult {
   return { ok: false, value: { ok: false, error }, error };
 }
 
-const ABORTED: unique symbol = Symbol("aborted");
+export const ABORTED: unique symbol = Symbol("aborted");
 
 /** `p`, or ABORTED once `signal` fires (the turn's deadline, or Stop). Never leaves a rejection unhandled. */
-function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
+export function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
   if (signal.aborted) {
     p.catch(() => undefined);
     return Promise.resolve(ABORTED);

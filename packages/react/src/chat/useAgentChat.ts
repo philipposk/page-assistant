@@ -132,6 +132,8 @@ export function useAgentChat(opts: UseAgentChatOptions) {
 
   // Keyed on whether there is an adapter and whose it is, not on the object: a host that builds
   // a new adapter every render would otherwise re-list (and re-run retention) on each one.
+  // With no `historyKey` the adapter object is all there is to go on, so a new one re-lists
+  // (another user's adapter must not keep showing the last one's chats); pass the user's id.
   const historyKey = useRef(opts.historyKey);
   useEffect(() => {
     if (historyKey.current !== opts.historyKey) {
@@ -139,7 +141,7 @@ export function useAgentChat(opts: UseAgentChatOptions) {
       reset();
     }
     void refreshChats();
-  }, [!!opts.history, opts.historyKey]);
+  }, [!!opts.history, opts.historyKey ?? adapterIdentity(opts.history)]);
 
   const finishTurn = (reply: AgentTurnResponse, retryMessage?: string, suggestionTool?: string) => {
     if (isFailureReply(reply)) {
@@ -341,3 +343,13 @@ export function useAgentChat(opts: UseAgentChatOptions) {
 }
 
 export type AgentChat = ReturnType<typeof useAgentChat>;
+
+const adapterIds = new WeakMap<object, number>();
+let nextAdapterId = 1;
+/** A number per adapter object, for effect keys. */
+function adapterIdentity(adapter: object | null | undefined): number {
+  if (!adapter) return 0;
+  let id = adapterIds.get(adapter);
+  if (id === undefined) adapterIds.set(adapter, (id = nextAdapterId++));
+  return id;
+}

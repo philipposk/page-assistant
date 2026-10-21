@@ -20,6 +20,11 @@ export interface PendingActionRecord {
   details: string[];
   createdAt: string;
   expiresAt: string;
+  /**
+   * The card was offered in a turn that had read someone else's text. Its confirmed run is
+   * treated the same: output cleaned, the reply tagged, later turns guarded.
+   */
+  tainted?: boolean;
 }
 
 /**

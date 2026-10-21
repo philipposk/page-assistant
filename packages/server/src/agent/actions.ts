@@ -67,12 +67,23 @@ export function normalizeNavigationPath(to: unknown): string | null {
   } catch {
     return null;
   }
-  // An encoded slash or dot segment that only a decoding server would resolve.
-  if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(decoded) || decoded.includes("\\")) return null;
+  // An encoded slash or dot segment that only a decoding server would resolve, a `;` path
+  // parameter some servers drop (`/api;x`, `/a/..;/api`), or a second layer of encoding.
+  if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(decoded) || /[\\;%]/.test(decoded)) return null;
   if (/^\/+api(?:\/|$)/.test(decoded)) return null;
-  if (/(?:^|\/)(?:sign[-_]?out|log[-_]?out|log[-_]?off|sign[-_]?off)(?:\/|$|\.)/.test(decoded)) return null;
+  if (SIGN_OUT.test(decoded)) return null;
+  // A sign-out asked for in the query (`/?logout=1`, `/session?action=sign_out`).
+  let query: string;
+  try {
+    query = decodeURIComponent(url.search.replace(/\+/g, " ")).toLowerCase();
+  } catch {
+    return null;
+  }
+  if (/(?:^|[?&=/])(?:sign[-_]?out|log[-_]?out|log[-_]?off|sign[-_]?off)(?:$|[&=/.])/.test(query)) return null;
   return url.pathname + url.search + url.hash;
 }
+
+const SIGN_OUT = /(?:^|\/)(?:sign[-_]?out|log[-_]?out|log[-_]?off|sign[-_]?off)(?:\/|$|\.)/;
 
 export function isSafeNavigationPath(to: unknown): to is string {
   return normalizeNavigationPath(to) !== null;

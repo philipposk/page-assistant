@@ -278,7 +278,12 @@ export interface AgentTurnInfo {
   rounds: number;
   model?: string;
   provider?: string;
-  usage: { promptTokens: number; completionTokens: number };
+  /**
+   * `promptTokens` includes cached prompt tokens; `cacheReadTokens` / `cacheCreationTokens`
+   * say how many of them (when the provider reports it), since providers bill those at
+   * different rates.
+   */
+  usage: { promptTokens: number; completionTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number };
   errorCode: AgentErrorCode | null;
   ms: number;
 }
@@ -306,9 +311,11 @@ export interface AgentConfig<C = unknown> {
   /** Extra view-only UI action types tools may emit. */
   uiActions?: Record<string, CustomUiActionSpec>;
   /**
-   * "untrusted": the page's title and state can hold someone else's text, so a turn sent from a
-   * page with either is tainted. Default "trusted" (per page, the client can still send
-   * `page.untrusted`). The query string never reaches the model either way.
+   * "untrusted": the page's title, state and path can hold someone else's text, so a turn sent
+   * from a page with any of them (beyond "/") is tainted. Default "trusted" (per page, the
+   * client can still send `page.untrusted`). Either way the query string never reaches the
+   * model, and a path segment that isn't a plain word, short slug, number or UUID reaches it
+   * as ":param".
    */
   pageContext?: "trusted" | "untrusted";
   /** Messages answered with a fixed refusal before the model (e.g. payments, deleting the account). */
