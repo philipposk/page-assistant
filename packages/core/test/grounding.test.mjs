@@ -94,3 +94,18 @@ test("without verbatim, honest prose is still left alone", () => {
   assert.equal(out.text, prose);
   assert.equal(out.wasCorrected, false);
 });
+
+test("confirmation says what the action will do, not just the tool name", async () => {
+  const shareCap = { name: "create_share_link", description: "Create a public link.", confirm: true,
+    parameters: { type: "object", properties: { post: { type: "string" } } }, run: () => ({ ok: true }) };
+  const llm = scriptedLLM([{ toolCalls: [{ name: "create_share_link", args: { post: "Summer launch" } }], text: "" }]);
+  const a = new Assistant({ capabilities: [shareCap], llm, memory: new InMemoryStore() });
+  const res = await a.chat({ message: "share it", page: { url: "x", path: "/" } });
+  assert.equal(res.pendingConfirmation.summary, "Create share link · post: Summer launch");
+});
+
+test("confirmText overrides the default summary, and a throwing one falls back", async () => {
+  const { describeAction } = await import("../dist/index.js");
+  assert.equal(describeAction({ name: "x", confirmText: (a) => `Share “${a.post}”` }, { post: "P" }), "Share “P”");
+  assert.equal(describeAction({ name: "makeLink", confirmText: () => { throw new Error(); } }, {}), "Make link");
+});

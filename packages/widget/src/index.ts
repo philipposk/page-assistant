@@ -910,13 +910,13 @@ class PageAssistantController {
         // Prefer the readable assistant message; the visual highlight ring is the real
         // "show me before you do it" arg disclosure. Only fall back to a HUMAN-READABLE
         // arg summary (e.g. "Pricing"), never the raw `open_page_link({"label":"Pricing"})`.
-        const previewText =
-          res.message ||
-          readableArgs(res.pendingConfirmation.args) ||
-          res.pendingConfirmation.preview ||
-          res.pendingConfirmation.name;
+        // The card must always say WHAT will happen: the plain-words summary from core
+        // ("Create share link · post: Summer launch"), under the model's reply if it differs.
+        const pc = res.pendingConfirmation;
+        const action = pc.summary || readableArgs(pc.args) || pc.name;
+        const previewText = res.message && !res.message.includes(action) ? res.message : "";
         this.showActionPreview(res.pendingConfirmation.name, res.pendingConfirmation.args);
-        this.ui.addConfirm(previewText);
+        this.ui.addConfirm(previewText, action);
         this.ui.setState("idle");
         this.ui.setBusy(false);
         return;

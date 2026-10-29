@@ -159,6 +159,7 @@ const CSS = `
 .typing span:nth-child(2) { animation-delay: .2s; }
 .typing span:nth-child(3) { animation-delay: .4s; }
 @keyframes blink { 0%,60%,100% { opacity:.3; transform:translateY(0);} 30% { opacity:1; transform:translateY(-3px);} }
+.confirm-action { font-weight:600; margin-top:4px; padding:6px 8px; border-radius:8px; background:var(--pa-border); }
 .confirm { display:flex; gap:8px; margin-top:6px; }
 .confirm button { flex:1; padding:7px; border-radius:8px; border:none; cursor:pointer; font-weight:600; }
 .confirm .yes { background:var(--pa-accent); color:#fff; } .confirm .no { background:var(--pa-border); color:var(--pa-text); }
@@ -836,10 +837,16 @@ export class WidgetUI {
     this.clearConfirm();
   }
 
-  addConfirm(preview: string) {
+  addConfirm(preview: string, action?: string) {
     this.clearConfirm(); // never leave a previous confirm row live in the DOM
     const wrap = el("div", "msg assistant") as HTMLDivElement;
-    wrap.textContent = preview;
+    if (preview) wrap.appendChild(document.createTextNode(preview));
+    if (action) {
+      // The action itself, always visible: what Confirm will actually do.
+      const what = el("div", "confirm-action") as HTMLDivElement;
+      what.textContent = action;
+      wrap.appendChild(what);
+    }
     const row = el("div", "confirm") as HTMLDivElement;
     const yes = el("button", "yes") as HTMLButtonElement;
     yes.textContent = this.s.confirm;
