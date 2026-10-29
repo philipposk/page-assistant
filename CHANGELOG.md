@@ -2,6 +2,14 @@
 
 All notable changes to page-assistant. This project follows [semantic versioning](https://semver.org).
 
+## Unreleased
+
+- **The confirmation card says what Confirm will do.** It showed the model's reply or the
+  capability's description, so an action like Catchy's “create share link” asked to be confirmed
+  without saying what or for which post. The card now always shows a plain-words line, e.g.
+  “Create share link · post: Summer launch”. `pendingConfirmation.summary` carries it; a
+  capability can word it itself with `confirmText` (a string, or a function of the args).
+
 ## 0.8.0 — The widget on phones
 
 Found on an iPhone in Catchy (catchy.6x7.gr), which had worked around each of these in its own

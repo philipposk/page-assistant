@@ -50,6 +50,12 @@ export interface Capability<A = any, R = any> {
   verbatim?: boolean;
   /** If true, the assistant must get explicit user confirmation before run() (writes, deletes). */
   confirm?: boolean;
+  /**
+   * What the confirmation card says this action will do, in plain words, e.g.
+   * "Create a share link for “Summer launch”". A function gets the call's args.
+   * Default: the name in words plus the args, e.g. "Create share link · post: Summer launch".
+   */
+  confirmText?: string | ((args: A) => string);
   /** Optional tags for grouping in llm.txt / docs. */
   tags?: string[];
   /** If false, capability is hidden from the external agent endpoint (llm.txt). Default true. */
@@ -157,7 +163,14 @@ export interface ChatResponse {
   /** Capabilities that were actually executed this turn, with their real results. */
   invocations: ToolInvocation[];
   /** If a confirm-required capability is staged, this holds it until the user approves. */
-  pendingConfirmation?: { name: string; args: Record<string, unknown>; preview: string };
+  pendingConfirmation?: {
+    name: string;
+    args: Record<string, unknown>;
+    /** Raw `name(args)` for logs and external agents. */
+    preview: string;
+    /** Plain-words line for a confirmation card: what will happen if the user approves. */
+    summary: string;
+  };
   /** True if the grounding validator had to override invented model text. */
   corrected?: boolean;
   /** Token usage summed across every LLM round this turn (for metering/budgets). */

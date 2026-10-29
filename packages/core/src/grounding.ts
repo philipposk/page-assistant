@@ -260,6 +260,7 @@ export class Assistant {
         // Confirm gate: stage instead of executing (user UI or external agent must approve).
         // `preview` spells out the action + args so a UI can show exactly what will happen.
         if (cap.confirm) {
+          const summary = describeAction(cap, call.args);
           return {
             message: this.say(`Confirm this action? ${cap.description}`),
             invocations,
@@ -267,6 +268,7 @@ export class Assistant {
               name: cap.name,
               args: call.args,
               preview: `${cap.name}(${JSON.stringify(call.args)})`,
+              summary,
             },
             corrected,
             usage: finalUsage(),
@@ -556,4 +558,26 @@ function collectStructuralNumbers(text: string): Set<string> {
   // substring pass that would also swallow "2000" from "2000 units").
   for (const m of text.matchAll(YEAR_CONTEXT_RE)) addExact(m[1] ?? m[2] ?? m[3] ?? m[4] ?? "");
   return set;
+}
+
+/** Plain-words description of a staged action, for a confirmation card. Never throws. */
+export function describeAction(cap: Pick<Capability, "name" | "confirmText">, args: Record<string, unknown>): string {
+  try {
+    const t = typeof cap.confirmText === "function" ? cap.confirmText(args as any) : cap.confirmText;
+    if (typeof t === "string" && t.trim()) return t.trim();
+  } catch {
+    /* fall through to the default */
+  }
+  const words = cap.name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.]+/g, " ").trim().toLowerCase();
+  const head = words.charAt(0).toUpperCase() + words.slice(1);
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(args ?? {})) {
+    if (v === undefined || v === null || v === "") continue;
+    let shown: string;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") shown = String(v);
+    else shown = JSON.stringify(v);
+    if (shown.length > 60) shown = shown.slice(0, 57) + "…";
+    parts.push(`${k.replace(/[_\-]+/g, " ")}: ${shown}`);
+  }
+  return parts.length ? `${head} · ${parts.join(", ")}` : head;
 }
